@@ -20,6 +20,7 @@ type HttpMethod = 'GET' | 'POST';
 type CacheMode =
 	| 'default'
 	| 'no-store'
+	| 'no-cache'
 	| 'reload'
 	| 'force-cache'
 	| 'only-if-cached';
@@ -27,8 +28,9 @@ type CacheMode =
 type FetchOptions<T> = Omit<RequestInit, 'method'> & {
 	method?: HttpMethod;
 	tags?: string[];
+	/** Only honoured when `cache` allows caching; see the note in `fetcher`. */
 	revalidate?: number | false;
-	cache?: CacheMode | 'no-cache';
+	cache?: CacheMode;
 	responseType?: 'JSON' | 'TEXT';
 	schema?: z4.ZodType<T>;
 	baseUrl?: string;
@@ -41,7 +43,8 @@ export const fetcher = async <T>(
 	const {
 		method = 'GET',
 		tags = [],
-		revalidate = false,
+		revalidate,
+		cache = 'no-store',
 		baseUrl,
 		...fetchOptions
 	} = options;
@@ -59,6 +62,12 @@ export const fetcher = async <T>(
 		: endpoint;
 	const url = new URL(path, base);
 
+	// `cache: no-store`/`no-cache` and `next.revalidate` are mutually exclusive:
+	// Next warns when both are set, and `revalidate: false` means "cache
+	// forever", the opposite of the uncached default. So `next` only goes out
+	// when the caller actually opted into caching.
+	const uncached = cache === 'no-store' || cache === 'no-cache';
+
 	const response = await fetch(url, {
 		method,
 		...fetchOptions,
@@ -66,11 +75,15 @@ export const fetcher = async <T>(
 			'Content-Type': 'application/json',
 			...fetchOptions.headers,
 		},
-		cache: 'no-cache',
-		next: {
-			tags: [...tags],
-			revalidate,
-		},
+		cache,
+		...(uncached
+			? {}
+			: {
+					next: {
+						...(tags.length > 0 && { tags }),
+						...(revalidate !== undefined && { revalidate }),
+					},
+			  }),
 	});
 
 	if (!response.ok) {

@@ -3,6 +3,8 @@
 import { cn } from '@/lib/utils';
 import {
 	ColumnDef,
+	RowData,
+	TableMeta,
 	flexRender,
 	getCoreRowModel,
 	getPaginationRowModel,
@@ -13,12 +15,24 @@ import {
 	useReactTable,
 } from '@tanstack/react-table';
 import { ScreenerRow } from '../fundamental-page-schema';
+import { ScreenerColumn } from '../screener-config';
 
 declare module '@tanstack/react-table' {
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	interface ColumnMeta<TData, TValue> {
 		sticky?: boolean;
+		/** Pinned to the right edge (the action / "+" column). */
+		stickyRight?: boolean;
 		alignRight?: boolean;
+	}
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
+	interface TableMeta<TData extends RowData> {
+		/** Props for the "+" column picker in the action header. */
+		addColumn?: {
+			tabFields: Set<string>;
+			addedFields: Set<string>;
+			onToggle: (column: ScreenerColumn) => void;
+		};
 	}
 }
 
@@ -29,6 +43,7 @@ interface ScreenerTableProps {
 	onSortingChange: OnChangeFn<SortingState>;
 	pagination: PaginationState;
 	onPaginationChange: OnChangeFn<PaginationState>;
+	meta?: TableMeta<ScreenerRow>;
 }
 
 export function useScreenerTable({
@@ -38,11 +53,13 @@ export function useScreenerTable({
 	onSortingChange,
 	pagination,
 	onPaginationChange,
+	meta,
 }: ScreenerTableProps) {
 	return useReactTable({
 		data,
 		columns,
 		state: { sorting, pagination },
+		meta,
 		onSortingChange,
 		onPaginationChange,
 		getCoreRowModel: getCoreRowModel(),
@@ -73,8 +90,12 @@ export function ScreenerTable({
 									key={header.id}
 									className={cn(
 										'h-11 px-3 whitespace-nowrap align-middle border-b bg-muted',
-										meta?.alignRight ? 'text-right' : 'text-left',
-										meta?.sticky && 'sticky left-0 z-30'
+										meta?.alignRight
+											? 'text-right'
+											: 'text-left',
+										meta?.sticky && 'sticky left-0 z-30',
+										meta?.stickyRight &&
+											'sticky right-0 z-30 border-l shadow-[-6px_0_8px_-6px_rgb(0_0_0/0.15)]'
 									)}
 								>
 									{header.isPlaceholder
@@ -82,7 +103,7 @@ export function ScreenerTable({
 										: flexRender(
 												header.column.columnDef.header,
 												header.getContext()
-										  )}
+											)}
 								</th>
 							);
 						})}
@@ -109,7 +130,9 @@ export function ScreenerTable({
 											'h-10 px-3 whitespace-nowrap align-middle border-b tabular-nums',
 											meta?.alignRight && 'text-right',
 											meta?.sticky &&
-												'sticky left-0 z-10 bg-card group-hover:bg-muted'
+												'sticky left-0 z-10 bg-card group-hover:bg-muted',
+											meta?.stickyRight &&
+												'sticky right-0 z-10 bg-card group-hover:bg-muted border-l shadow-[-6px_0_8px_-6px_rgb(0_0_0/0.15)]'
 										)}
 									>
 										{flexRender(

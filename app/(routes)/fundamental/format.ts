@@ -75,6 +75,23 @@ export const formatUnixDate = (v: unknown) => {
 	});
 };
 
+/** IDX board lot: volume is reported in shares, IDX quotes it in lots of 100. */
+export const LOT_SIZE = 100;
+
+/**
+ * `indexes` -> IDX index codes: [{proname: "IDX:LQ45"}, {proname: "STOXX:..."}]
+ * -> ["LQ45"]. Foreign indices (STOXX etc.) are dropped.
+ */
+export const idxIndexCodes = (v: unknown): string[] =>
+	Array.isArray(v)
+		? v.flatMap((i) => {
+				const pro = (i as { proname?: unknown })?.proname;
+				return typeof pro === 'string' && pro.startsWith('IDX:')
+					? [pro.slice(4)]
+					: [];
+		  })
+		: [];
+
 /** Ordinal used to sort rating columns (Strong buy first when descending). */
 const RATING_ORDER: Record<string, number> = {
 	StrongBuy: 5,

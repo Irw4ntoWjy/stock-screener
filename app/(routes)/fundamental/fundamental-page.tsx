@@ -12,20 +12,36 @@ import {
 	Updater,
 } from '@tanstack/react-table';
 import { FileDown, RefreshCcw, Search, X } from 'lucide-react';
-import { useMemo, useRef, useState, useTransition } from 'react';
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { toast } from 'sonner';
 import {
 	ScreenerTable,
 	useScreenerTable,
 } from './component/screener-table';
+import { AddFilterMenu } from './component/add-filter-menu';
+import { withComputed } from './column-catalog';
 import {
-	DaysChip,
+	AddedFilterChip,
+	ConditionChip,
+	DateRangeChip,
 	MultiSelectChip,
-	RangeChip,
+	PerfConditionChip,
 } from './component/filter-chips';
-import { formatUnixDate, ratingLabel } from './format';
 import {
-	RangeValue,
+	formatUnixDate,
+	idxIndexCodes,
+	LOT_SIZE,
+	ratingLabel,
+} from './format';
+import {
+	formatMarketDate,
+	formatMarketTime,
+	isMarketHours,
+	todayMarketDate,
+} from './market-hours';
+import {
+	AddedFilter,
+	ConditionValue,
 	ScreenerFilters,
 	ScreenerResult,
 	ScreenerRow,
@@ -33,18 +49,28 @@ import {
 } from './fundamental-page-schema';
 import {
 	ANALYST_RATINGS,
-	EARNINGS_DAY_OPTIONS,
+	columnFields,
+	CONDITION_CHIPS,
+	DEFAULT_TAB,
 	getTab,
 	INDEXES,
-	RANGE_CHIPS,
+	RECENT_EARNINGS_FIELD,
+	RECENT_EARNINGS_OPTIONS,
 	SCREENER_TABS,
 	ScreenerColumn,
 	SECTORS,
+	UPCOMING_EARNINGS_FIELD,
+	UPCOMING_EARNINGS_OPTIONS,
 } from './screener-config';
 import { scanIdxStocks } from './server/fetch-fundamental-data';
 import { getFundamentalColumns } from './table-config';
 
 const PAGE_SIZE = 50;
+/**
+ * Poll cadence while a session is running. It matches the server-side cache TTL
+ * so concurrent viewers coalesce onto one upstream request per minute.
+ */
+const REFRESH_MS = 60 * 1000;
 const DEFAULT_SORT: SortingState = [
 	{ id: 'market_cap_basic', desc: true },
 ];
@@ -54,8 +80,38 @@ interface FundamentalPageProps {
 	initialError?: string;
 }
 
-const hasColumn = (tab: ScreenerTabId, id: string) =>
-	id === 'symbol' || getTab(tab).columns.some((c) => c.field === id);
+/** Columns the user added through the "+" header button, per tab. */
+type AddedColumns = Partial<Record<ScreenerTabId, ScreenerColumn[]>>;
+// stable identity, so memos keyed on a tab's added columns do not churn
+const NO_COLUMNS: ScreenerColumn[] = [];
+
+// Per-viewer convenience: a blocked or wiped store just means no added columns.
+const ADDED_COLUMNS_KEY = 'fundamental.added-columns.v1';
+const readAddedColumns = (): AddedColumns => {
+	try {
+		const raw = localStorage.getItem(ADDED_COLUMNS_KEY);
+		const parsed = raw ? JSON.parse(raw) : {};
+		return parsed && typeof parsed === 'object' ? parsed : {};
+	} catch {
+		return {};
+	}
+};
+const saveAddedColumns = (value: AddedColumns) => {
+	try {
+		localStorage.setItem(ADDED_COLUMNS_KEY, JSON.stringify(value));
+	} catch {
+		// storage unavailable: the columns still work for this visit
+	}
+};
+
+const hasColumn = (
+	tab: ScreenerTabId,
+	id: string,
+	added: ScreenerColumn[] = []
+) =>
+	id === 'symbol' ||
+	getTab(tab).columns.some((c) => c.field === id) ||
+	added.some((c) => c.field === id);
 
 const exportValue = (col: ScreenerColumn, row: ScreenerRow) => {
 	const v = row[col.field];
@@ -70,8 +126,12 @@ const exportValue = (col: ScreenerColumn, row: ScreenerRow) => {
 			);
 		case 'patterns':
 			return Array.isArray(v) ? v.join(', ') : String(v ?? '');
+		case 'indexes':
+			return idxIndexCodes(v).join(', ');
 		case 'date':
 			return formatUnixDate(v) ?? '';
+		case 'lot':
+			return typeof v === 'number' ? v / LOT_SIZE : '';
 		default:
 			return typeof v === 'number' ? v : '';
 	}
@@ -81,7 +141,7 @@ export default function FundamentalPage({
 	initialData,
 	initialError,
 }: FundamentalPageProps) {
-	const [tab, setTab] = useState<ScreenerTabId>('overview');
+	const [tab, setTab] = useState<ScreenerTabId>(DEFAULT_TAB);
 	const [filters, setFilters] = useState<ScreenerFilters>({});
 	const [search, setSearch] = useState('');
 	const [result, setResult] = useState(initialData);
@@ -93,18 +153,25 @@ export default function FundamentalPage({
 		pageSize: PAGE_SIZE,
 	});
 	const requestId = useRef(0);
+	const [marketOpen, setMarketOpen] = useState(() => isMarketHours());
+	const [addedColumns, setAddedColumns] = useState<AddedColumns>({});
+	const addedRef = useRef(addedColumns);
+	const tabAdded = addedColumns[tab] ?? NO_COLUMNS;
 
 	const load = (
 		nextTab: ScreenerTabId,
 		nextFilters: ScreenerFilters,
-		{ force = false, resetPage = true } = {}
+		{ force = false, resetPage = true, silent = false } = {}
 	) => {
 		const id = ++requestId.current;
-		startTransition(async () => {
+		const run = async () => {
 			try {
 				const data = await scanIdxStocks({
 					tab: nextTab,
 					filters: nextFilters,
+					extraFields: (addedRef.current[nextTab] ?? []).flatMap(
+						columnFields
+					),
 					force,
 				});
 				if (id !== requestId.current) return; // a newer request won
@@ -114,12 +181,19 @@ export default function FundamentalPage({
 					setPagination((p) => ({ ...p, pageIndex: 0 }));
 			} catch (e) {
 				if (id !== requestId.current) return;
+				// a failed background poll leaves the last good rows on screen
+				// instead of throwing a toast at someone who did not ask
+				if (silent) return;
 				const message =
 					e instanceof Error ? e.message : 'Failed to load data';
 				setError(message);
 				toast.error('Failed to load screener data from TradingView');
 			}
-		});
+		};
+		// background polls stay outside the transition, so the loading overlay
+		// does not flash over the table once a minute
+		if (silent) void run();
+		else startTransition(run);
 	};
 
 	// refs so debounced callbacks never read stale state
@@ -133,11 +207,22 @@ export default function FundamentalPage({
 		load(tabRef.current, next);
 	};
 
-	const setRange = (field: string, value: RangeValue | undefined) => {
-		const ranges = { ...(filtersRef.current.ranges ?? {}) };
-		if (value) ranges[field] = value;
-		else delete ranges[field];
-		updateFilters({ ranges });
+	const setCondition = (field: string, value: ConditionValue | undefined) => {
+		const conditions = { ...(filtersRef.current.conditions ?? {}) };
+		if (value) conditions[field] = value;
+		else delete conditions[field];
+		updateFilters({ conditions });
+	};
+
+	const addCustomFilter = (added: AddedFilter) => {
+		const custom = { ...(filtersRef.current.custom ?? {}), [added.key]: added };
+		updateFilters({ custom });
+	};
+
+	const removeCustomFilter = (key: string) => {
+		const custom = { ...(filtersRef.current.custom ?? {}) };
+		delete custom[key];
+		updateFilters({ custom });
 	};
 
 	const changeTab = (next: ScreenerTabId) => {
@@ -145,7 +230,9 @@ export default function FundamentalPage({
 		setTab(next);
 		tabRef.current = next;
 		// keep the sort if the new tab still has that column
-		setSorting((s) => s.filter((x) => hasColumn(next, x.id)));
+		setSorting((s) =>
+			s.filter((x) => hasColumn(next, x.id, addedRef.current[next]))
+		);
 		load(next, filtersRef.current);
 	};
 
@@ -159,9 +246,8 @@ export default function FundamentalPage({
 		(filters.indexes?.length ? 1 : 0) +
 		(filters.sectors?.length ? 1 : 0) +
 		(filters.ratings?.length ? 1 : 0) +
-		Object.keys(filters.ranges ?? {}).length +
-		(filters.recentEarningsDays !== undefined ? 1 : 0) +
-		(filters.upcomingEarningsDays !== undefined ? 1 : 0);
+		Object.keys(filters.conditions ?? {}).length +
+		Object.keys(filters.custom ?? {}).length;
 
 	const resetFilters = () => {
 		setSearch('');
@@ -170,14 +256,94 @@ export default function FundamentalPage({
 		load(tabRef.current, {});
 	};
 
+	// `load` closes over fresh state on every render, so the timers below reach
+	// it through a ref and the listeners can stay mounted for the page's life.
+	const pollRef = useRef<() => void>(() => {});
+	useEffect(() => {
+		pollRef.current = () => {
+			setMarketOpen(isMarketHours());
+			if (document.visibilityState !== 'visible' || !isMarketHours())
+				return;
+			load(tabRef.current, filtersRef.current, {
+				resetPage: false,
+				silent: true,
+			});
+		};
+	});
+
+	useEffect(() => {
+		const tick = () => pollRef.current();
+		const timer = setInterval(tick, REFRESH_MS);
+		// a tab left open overnight catches up the moment it is looked at again
+		document.addEventListener('visibilitychange', tick);
+		return () => {
+			clearInterval(timer);
+			document.removeEventListener('visibilitychange', tick);
+		};
+	}, []);
+
+	// Restored after mount (localStorage is not there during SSR); the first
+	// render's server data lacks their fields, so fetch once more if needed.
+	useEffect(() => {
+		const stored = readAddedColumns();
+		addedRef.current = stored;
+		setAddedColumns(stored);
+		if (stored[tabRef.current]?.length)
+			load(tabRef.current, filtersRef.current, { resetPage: false });
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	const toggleAddedColumn = (col: ScreenerColumn) => {
+		const current = addedRef.current[tabRef.current] ?? [];
+		const exists = current.some((c) => c.field === col.field);
+		const nextForTab = exists
+			? current.filter((c) => c.field !== col.field)
+			: [...current, col];
+		const next = { ...addedRef.current, [tabRef.current]: nextForTab };
+		addedRef.current = next;
+		setAddedColumns(next);
+		saveAddedColumns(next);
+		if (exists) {
+			setSorting((s) => s.filter((x) => x.id !== col.field));
+		} else {
+			load(tabRef.current, filtersRef.current, { resetPage: false });
+		}
+	};
+
 	const columns = useMemo(
-		() => getFundamentalColumns(tab, result.totalCount),
-		[tab, result.totalCount]
+		() =>
+			getFundamentalColumns(
+				tab,
+				result.totalCount,
+				tabAdded,
+				toggleAddedColumn
+			),
+		// toggleAddedColumn only reads refs, so a stale copy behaves the same
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[tab, result.totalCount, tabAdded]
+	);
+
+	const rows = useMemo(
+		() => withComputed(result.rows, tabAdded),
+		[result.rows, tabAdded]
+	);
+
+	const meta = useMemo(
+		() => ({
+			addColumn: {
+				tabFields: new Set(getTab(tab).columns.map((c) => c.field)),
+				addedFields: new Set(tabAdded.map((c) => c.field)),
+				onToggle: toggleAddedColumn,
+			},
+		}),
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[tab, tabAdded]
 	);
 
 	const table = useScreenerTable({
 		columns,
-		data: result.rows,
+		data: rows,
+		meta,
 		sorting,
 		onSortingChange: (u: Updater<SortingState>) => {
 			setSorting(u);
@@ -199,11 +365,11 @@ export default function FundamentalPage({
 					width: 38,
 					value: (r) => String(r.description ?? ''),
 				},
-				...current.columns.map((col) => ({
+				...[...current.columns, ...tabAdded].map((col) => ({
 					header: col.sub ? `${col.label} (${col.sub})` : col.label,
 					width: col.width ?? 16,
 					value: (r: ScreenerRow) => exportValue(col, r),
-					cellStyle: ['text', 'rating', 'patterns', 'date'].includes(
+					cellStyle: ['text', 'rating', 'patterns', 'indexes', 'date'].includes(
 						col.format
 					)
 						? undefined
@@ -217,10 +383,31 @@ export default function FundamentalPage({
 		);
 	};
 
-	const updatedAt = new Date(result.fetchedAt).toLocaleTimeString(
-		'en-GB',
-		{ hour: '2-digit', minute: '2-digit' }
-	);
+	// Always WIB: the exchange's clock is the only one that means anything here,
+	// and a fixed zone keeps the SSR markup and the hydrated markup identical.
+	const updatedAt = formatMarketTime(result.fetchedAt);
+	const sessionDate =
+		typeof result.marketTime === 'number'
+			? formatMarketDate(result.marketTime)
+			: undefined;
+
+	// Three states, because "closed" alone hid the one that caused confusion:
+	// waiting on today's first prints, live, and closed on today's own numbers.
+	const statusLabel = result.staleSession
+		? `No ${todayMarketDate()} session yet`
+		: marketOpen
+		? `Updated ${updatedAt} WIB`
+		: `Market closed · ${sessionDate ?? todayMarketDate()} close`;
+
+	const statusDetail = [
+		`Fetched ${updatedAt} WIB`,
+		result.updateMode,
+		result.staleSession && sessionDate
+			? `Trade columns blank until ${todayMarketDate()} trades — upstream is still on the ${sessionDate} bar`
+			: undefined,
+	]
+		.filter(Boolean)
+		.join(' · ');
 
 	return (
 		<div className="bg-card w-full h-full border border-t-0 rounded-b-lg px-4 py-4 flex flex-col gap-3 min-h-0">
@@ -281,7 +468,7 @@ export default function FundamentalPage({
 				/>
 				<MultiSelectChip
 					label="Sector"
-					options={SECTORS.map((s) => ({ value: s, label: s }))}
+					options={SECTORS}
 					selected={filters.sectors ?? []}
 					onChange={(sectors) => updateFilters({ sectors })}
 				/>
@@ -292,32 +479,38 @@ export default function FundamentalPage({
 					onChange={(ratings) => updateFilters({ ratings })}
 					searchable={false}
 				/>
-				{RANGE_CHIPS.map((chip) => (
-					<RangeChip
-						key={chip.field}
-						chip={chip}
-						value={filters.ranges?.[chip.field]}
-						onChange={(v) => setRange(chip.field, v)}
+				{CONDITION_CHIPS.map((def) => (
+					<ConditionChip
+						key={def.field}
+						def={def}
+						value={filters.conditions?.[def.field]}
+						onChange={(v) => setCondition(def.field, v)}
 					/>
 				))}
-				<DaysChip
+				<PerfConditionChip
+					conditions={filters.conditions}
+					setCondition={setCondition}
+				/>
+				<DateRangeChip
 					label="Recent earnings"
-					prefix="Past"
-					options={EARNINGS_DAY_OPTIONS}
-					value={filters.recentEarningsDays}
-					onChange={(recentEarningsDays) =>
-						updateFilters({ recentEarningsDays })
-					}
+					options={RECENT_EARNINGS_OPTIONS}
+					value={filters.conditions?.[RECENT_EARNINGS_FIELD]}
+					onChange={(v) => setCondition(RECENT_EARNINGS_FIELD, v)}
 				/>
-				<DaysChip
+				<DateRangeChip
 					label="Upcoming earnings"
-					prefix="Next"
-					options={EARNINGS_DAY_OPTIONS}
-					value={filters.upcomingEarningsDays}
-					onChange={(upcomingEarningsDays) =>
-						updateFilters({ upcomingEarningsDays })
-					}
+					options={UPCOMING_EARNINGS_OPTIONS}
+					value={filters.conditions?.[UPCOMING_EARNINGS_FIELD]}
+					onChange={(v) => setCondition(UPCOMING_EARNINGS_FIELD, v)}
 				/>
+				{Object.values(filters.custom ?? {}).map((added) => (
+					<AddedFilterChip
+						key={added.key}
+						added={added}
+						onRemove={() => removeCustomFilter(added.key)}
+					/>
+				))}
+				<AddFilterMenu added={filters.custom} onAdd={addCustomFilter} />
 				{activeFilterCount > 0 && (
 					<Button
 						variant="ghost"
@@ -332,14 +525,14 @@ export default function FundamentalPage({
 
 			{/* Tabs */}
 			<div className="flex items-center justify-between gap-3 border-b">
-				<div className="flex overflow-x-auto">
+				<div className="-mb-px flex self-end overflow-x-auto overflow-y-hidden">
 					{SCREENER_TABS.map((t) => (
 						<button
 							key={t.id}
 							type="button"
 							onClick={() => changeTab(t.id)}
 							className={cn(
-								'whitespace-nowrap px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors cursor-pointer',
+								'whitespace-nowrap px-3 py-2 text-sm font-medium border-b-2 transition-colors cursor-pointer',
 								t.id === tab
 									? 'border-primary text-foreground'
 									: 'border-transparent text-muted-foreground hover:text-foreground'
@@ -350,8 +543,21 @@ export default function FundamentalPage({
 					))}
 				</div>
 				<div className="flex shrink-0 items-center gap-2 pb-1 text-xs text-muted-foreground">
-					<span className="hidden lg:inline">
-						Updated {updatedAt}
+					<span
+						className="hidden lg:flex items-center gap-1.5"
+						title={statusDetail}
+					>
+						<span
+							className={cn(
+								'size-1.5 rounded-full',
+								result.staleSession
+									? 'bg-amber-500'
+									: marketOpen
+									? 'bg-emerald-500'
+									: 'bg-muted-foreground/60'
+							)}
+						/>
+						{statusLabel}
 					</span>
 					<Button
 						variant="outline"
@@ -378,7 +584,11 @@ export default function FundamentalPage({
 
 			{/* Table */}
 			<div className="relative flex-1 min-h-0">
-				<ScrollArea.Root className="h-full w-full rounded-md border border-border overflow-hidden">
+				{/* "auto": scrollbars stay visible whenever the table overflows, not only on hover */}
+				<ScrollArea.Root
+					type="auto"
+					className="h-full w-full rounded-md border border-border overflow-hidden"
+				>
 					<ScrollArea.Viewport className="h-full w-full">
 						<ScreenerTable table={table} />
 					</ScrollArea.Viewport>
@@ -390,9 +600,9 @@ export default function FundamentalPage({
 					</ScrollArea.Scrollbar>
 					<ScrollArea.Scrollbar
 						orientation="horizontal"
-						className="h-1.5"
+						className="flex h-2.5 touch-none select-none border-t bg-muted/60 p-0.5"
 					>
-						<ScrollArea.Thumb className="bg-muted-foreground dark:bg-primary rounded-full" />
+						<ScrollArea.Thumb className="relative flex-1 rounded-full bg-muted-foreground/60 hover:bg-muted-foreground dark:bg-primary/70 dark:hover:bg-primary cursor-grab active:cursor-grabbing" />
 					</ScrollArea.Scrollbar>
 					<ScrollArea.Corner />
 				</ScrollArea.Root>

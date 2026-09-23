@@ -14,6 +14,10 @@ import { ScreenerTabId } from './fundamental-page-schema';
  * - text:         plain string
  * - date:         unix seconds -> date
  * - patterns:     candlestick pattern list
+ * - lot:          share volume shown in IDX lots (÷ 100)
+ * - indexes:      IDX index membership codes (IDX30, LQ45, ...)
+ * - fundamental:  amount + fundamental currency, abbreviated from 1M up
+ * - auto:         number, abbreviated from 1M up
  */
 export type ColumnFormat =
 	| 'price'
@@ -27,7 +31,11 @@ export type ColumnFormat =
 	| 'rating'
 	| 'text'
 	| 'date'
-	| 'patterns';
+	| 'patterns'
+	| 'lot'
+	| 'indexes'
+	| 'fundamental'
+	| 'auto';
 
 export type ScreenerColumn = {
 	/** TradingView field requested and read from the row. */
@@ -39,6 +47,11 @@ export type ScreenerColumn = {
 	/** Field holding the display text (e.g. `sector.tr`), sorted by `field`. */
 	displayField?: string;
 	width?: number; // excel column width
+	/**
+	 * Derived column (see column-catalog.ts): these TradingView fields are
+	 * requested instead of `field`, and `field` is filled in client-side.
+	 */
+	requires?: string[];
 };
 
 export type ScreenerTab = {
@@ -47,7 +60,7 @@ export type ScreenerTab = {
 	columns: ScreenerColumn[];
 };
 
-/** Always requested: symbol cell, formatting and row-state columns. */
+/** Always requested: symbol cell, formatting, row-state and session-stamp columns. */
 export const BASE_COLUMNS = [
 	'ticker-view',
 	'name',
@@ -62,6 +75,10 @@ export const BASE_COLUMNS = [
 	'currency',
 	'fundamental_currency_code',
 	'active_symbol',
+	// Not rendered as columns: they tell the UI which session the rows are from,
+	// which the fetch time alone cannot (outside hours the numbers are last close).
+	'time',
+	'update_mode',
 ];
 
 const price: ScreenerColumn = {
@@ -109,6 +126,80 @@ const fiscalPeriodEnd: ScreenerColumn = {
 };
 
 export const SCREENER_TABS: ScreenerTab[] = [
+	{
+		// IDX-style layout; every value is TradingView's own field, unmodified
+		// apart from volume shown in lots.
+		id: 'custom',
+		label: 'Custom',
+		columns: [
+			{
+				field: 'sector',
+				displayField: 'sector.tr',
+				label: 'Sector',
+				format: 'text',
+				width: 24,
+			},
+			{
+				field: 'industry',
+				displayField: 'industry.tr',
+				label: 'Sub industry',
+				format: 'text',
+				width: 28,
+			},
+			{
+				field: 'indexes',
+				label: 'Stock class',
+				format: 'indexes',
+				width: 40,
+			},
+			marketCap,
+			{ field: 'volume', label: 'Vol', sub: 'Lot', format: 'lot' },
+			price,
+			{
+				field: 'book_value_per_share_fq',
+				label: 'BV',
+				sub: 'FQ',
+				format: 'moneyPrecise',
+			},
+			{
+				field: 'price_book_fq',
+				label: 'PBV',
+				sub: 'FQ',
+				format: 'number',
+			},
+			peTtm,
+			{
+				field: 'earnings_per_share_basic_ttm',
+				label: 'EPS',
+				sub: 'TTM',
+				format: 'moneyPrecise',
+			},
+			{
+				field: 'debt_to_equity_fq',
+				label: 'DER',
+				sub: 'FQ',
+				format: 'number',
+			},
+			{
+				field: 'return_on_assets_fq',
+				label: 'ROA %',
+				sub: 'FQ',
+				format: 'percent',
+			},
+			{
+				field: 'return_on_equity_fq',
+				label: 'ROE %',
+				sub: 'FQ',
+				format: 'percent',
+			},
+			{
+				field: 'net_margin_ttm',
+				label: 'NPM %',
+				sub: 'TTM',
+				format: 'percent',
+			},
+		],
+	},
 	{
 		id: 'overview',
 		label: 'Overview',
@@ -725,123 +816,339 @@ export const SCREENER_TABS: ScreenerTab[] = [
 	},
 ];
 
-export const DEFAULT_TAB: ScreenerTabId = 'overview';
+/**
+ * Intraday fields that only mean anything inside the session they came from.
+ * When upstream is still serving an earlier session's bar these are dropped, so
+ * last session's move never renders as though it were today's.
+ */
+export const SESSION_FIELDS = [
+	'change',
+	'volume',
+	'relative_volume_10d_calc',
+	'gap',
+	'volume_change',
+	'premarket_close',
+	'premarket_change',
+	'premarket_gap',
+	'premarket_volume',
+];
+
+export const DEFAULT_TAB: ScreenerTabId = 'custom';
 
 export const getTab = (id: ScreenerTabId) =>
 	SCREENER_TABS.find((t) => t.id === id) ?? SCREENER_TABS[0];
 
-/** Unique column list for a tab: base columns first, then data + display columns. */
-export const getRequestColumns = (id: ScreenerTabId) => {
+/** TradingView fields a column needs from the scanner. */
+export const columnFields = (c: ScreenerColumn) =>
+	c.requires ?? (c.displayField ? [c.field, c.displayField] : [c.field]);
+
+/**
+ * Unique column list for a tab: base columns first, then data + display
+ * columns, then fields for columns the user added.
+ */
+export const getRequestColumns = (
+	id: ScreenerTabId,
+	extraFields: string[] = []
+) => {
 	const cols = new Set(BASE_COLUMNS);
-	for (const c of getTab(id).columns) {
-		cols.add(c.field);
-		if (c.displayField) cols.add(c.displayField);
-	}
+	for (const c of getTab(id).columns)
+		for (const f of columnFields(c)) cols.add(f);
+	for (const f of extraFields) cols.add(f);
 	return [...cols];
 };
 
 // ---------------------------------------------------------------------------
-// Filter chips
+// Filter chips — presets mirror TradingView's own screener dropdowns exactly,
+// captured from the live `/indonesia/scan` requests (see the API reference).
 // ---------------------------------------------------------------------------
 
-export type RangeChip = {
-	field: string;
+export type ConditionOperation =
+	| 'greater'
+	| 'egreater'
+	| 'less'
+	| 'eless'
+	| 'equal'
+	| 'in_range'
+	| 'crosses';
+
+export type ConditionOption = {
 	label: string;
-	/** Hint for the inputs; `abbr` accepts values like 10T / 500B. */
-	unit: 'price' | 'percent' | 'abbr' | 'number';
+	subtitle?: string;
+	operation: ConditionOperation;
+	right: number | number[] | string;
 };
 
-export const RANGE_CHIPS: RangeChip[] = [
-	{ field: 'close', label: 'Price', unit: 'price' },
-	{ field: 'change', label: 'Chg %', unit: 'percent' },
-	{ field: 'market_cap_basic', label: 'Mkt cap', unit: 'abbr' },
-	{ field: 'price_earnings_ttm', label: 'P/E', unit: 'number' },
+export type ConditionChipDef = {
+	field: string;
+	label: string;
+	/** Hint for the manual-setup inputs; `abbr` accepts values like 10T / 500B. */
+	unit: 'price' | 'percent' | 'abbr' | 'number';
+	options: ConditionOption[];
+};
+
+/** Shared by "Chg %" and every "Perf %" period — TradingView reuses this exact ladder. */
+export const CHANGE_LIKE_OPTIONS: ConditionOption[] = [
+	{ label: 'Above 30%', subtitle: 'Exceptional up', operation: 'greater', right: 30 },
+	{ label: 'Above 20%', subtitle: 'Very strong up', operation: 'greater', right: 20 },
+	{ label: 'Above 10%', subtitle: 'Strong up', operation: 'greater', right: 10 },
+	{ label: 'Above 5%', subtitle: 'Moderate up', operation: 'greater', right: 5 },
+	{ label: '0% to 5%', subtitle: 'Weak up', operation: 'in_range', right: [0, 5] },
+	{ label: 'Above 0%', subtitle: 'Up', operation: 'greater', right: 0 },
+	{ label: 'Below 0%', subtitle: 'Down', operation: 'less', right: 0 },
+	{ label: '−5% to 0%', subtitle: 'Weak down', operation: 'in_range', right: [-5, 0] },
+	{ label: 'Below −5%', subtitle: 'Moderate down', operation: 'less', right: -5 },
+	{ label: 'Below −10%', subtitle: 'Strong down', operation: 'less', right: -10 },
+	{ label: 'Below −20%', subtitle: 'Severe down', operation: 'less', right: -20 },
+	{ label: 'Below −30%', subtitle: 'Extreme down', operation: 'less', right: -30 },
+];
+
+export const CONDITION_CHIPS: ConditionChipDef[] = [
+	{
+		field: 'close',
+		label: 'Price',
+		unit: 'price',
+		options: [
+			{ label: 'Above 100', subtitle: 'Fractional shares time', operation: 'greater', right: 100 },
+			{ label: '10 to 100', subtitle: 'Mid-priced', operation: 'in_range', right: [10, 100] },
+			{ label: '10 and below', subtitle: 'Not quite penny stocks', operation: 'eless', right: 10 },
+			{ label: '5 and below', subtitle: 'Penny stocks', operation: 'eless', right: 5 },
+			{ label: 'Above EMA 50', subtitle: 'Uptrend', operation: 'greater', right: 'EMA50' },
+			{ label: 'Below EMA 50', subtitle: 'Downtrend', operation: 'less', right: 'EMA50' },
+			{ label: 'Crosses BB 20 Upper', subtitle: 'Overbought', operation: 'crosses', right: 'BB.upper' },
+			{ label: 'Crosses BB 20 Lower', subtitle: 'Oversold', operation: 'crosses', right: 'BB.lower' },
+		],
+	},
+	{ field: 'change', label: 'Chg %', unit: 'percent', options: CHANGE_LIKE_OPTIONS },
+	{
+		field: 'market_cap_basic',
+		label: 'Mkt cap',
+		unit: 'abbr',
+		// Same thresholds as TradingView's Indonesia screener, which applies them
+		// to the IDR value as-is (no USD conversion): Mega = 200 B IDR and above.
+		options: [
+			{ label: '200 B IDR and above', subtitle: 'Mega', operation: 'egreater', right: 200_000_000_000 },
+			{ label: '10 B to 200 B IDR', subtitle: 'Large', operation: 'in_range', right: [10_000_000_000, 200_000_000_000] },
+			{ label: '2 B to 10 B IDR', subtitle: 'Mid', operation: 'in_range', right: [2_000_000_000, 10_000_000_000] },
+			{ label: '300 M to 2 B IDR', subtitle: 'Small', operation: 'in_range', right: [300_000_000, 2_000_000_000] },
+			{ label: '50 M to 300 M IDR', subtitle: 'Micro', operation: 'in_range', right: [50_000_000, 300_000_000] },
+			{ label: '50 M IDR and below', subtitle: 'Nano', operation: 'eless', right: 50_000_000 },
+		],
+	},
+	{
+		field: 'price_earnings_ttm',
+		label: 'P/E',
+		unit: 'number',
+		options: [
+			{ label: '50 and above', subtitle: 'Extremely high', operation: 'egreater', right: 50 },
+			{ label: '35 to 50', subtitle: 'Very high', operation: 'in_range', right: [35, 50] },
+			{ label: '25 to 35', subtitle: 'High', operation: 'in_range', right: [25, 35] },
+			{ label: '15 to 25', subtitle: 'Moderate', operation: 'in_range', right: [15, 25] },
+			{ label: '5 to 15', subtitle: 'Low', operation: 'in_range', right: [5, 15] },
+			{ label: '0 to 5', subtitle: 'Very low', operation: 'in_range', right: [0, 5] },
+		],
+	},
 	{
 		field: 'earnings_per_share_diluted_yoy_growth_ttm',
 		label: 'EPS dil growth',
 		unit: 'percent',
+		options: [
+			{ label: 'Above 50%', subtitle: 'Exceptional growth', operation: 'greater', right: 50 },
+			{ label: '25% to 50%', subtitle: 'Strong growth', operation: 'in_range', right: [25, 50] },
+			{ label: '10% to 25%', subtitle: 'Moderate growth', operation: 'in_range', right: [10, 25] },
+			{ label: '5% to 10%', subtitle: 'Low growth', operation: 'in_range', right: [5, 10] },
+			{ label: '0% to 5%', subtitle: 'Minimal growth', operation: 'in_range', right: [0, 5] },
+			{ label: 'Above 0%', subtitle: 'Growth', operation: 'greater', right: 0 },
+			{ label: 'Below 0%', subtitle: 'Reduction', operation: 'less', right: 0 },
+		],
 	},
-	{ field: 'dividends_yield_current', label: 'Div yield %', unit: 'percent' },
-	{ field: 'Perf.Y', label: 'Perf % 1Y', unit: 'percent' },
+	{
+		field: 'dividends_yield_current',
+		label: 'Div yield %',
+		unit: 'percent',
+		options: [
+			{ label: 'Above 15%', subtitle: 'Exceptional', operation: 'greater', right: 15 },
+			{ label: '10% to 15%', subtitle: 'Very high', operation: 'in_range', right: [10, 15] },
+			{ label: '6% to 10%', subtitle: 'High', operation: 'in_range', right: [6, 10] },
+			{ label: '4% to 6%', subtitle: 'Moderate', operation: 'in_range', right: [4, 6] },
+			{ label: '2% to 4%', subtitle: 'Low', operation: 'in_range', right: [2, 4] },
+			{ label: '0% to 2%', subtitle: 'Very low', operation: 'in_range', right: [0, 2] },
+			{ label: '0%', subtitle: 'No dividend', operation: 'equal', right: 0 },
+		],
+	},
 	{
 		field: 'total_revenue_yoy_growth_ttm',
 		label: 'Revenue growth',
 		unit: 'percent',
+		options: [
+			{ label: 'Above 50%', subtitle: 'Exceptional growth', operation: 'greater', right: 50 },
+			{ label: '25% to 50%', subtitle: 'Strong growth', operation: 'in_range', right: [25, 50] },
+			{ label: '10% to 25%', subtitle: 'Moderate growth', operation: 'in_range', right: [10, 25] },
+			{ label: '5% to 10%', subtitle: 'Low growth', operation: 'in_range', right: [5, 10] },
+			{ label: '0% to 5%', subtitle: 'Minimal growth', operation: 'in_range', right: [0, 5] },
+			{ label: 'Above 0%', subtitle: 'Growth', operation: 'greater', right: 0 },
+			{ label: 'Below 0%', subtitle: 'Reduction', operation: 'less', right: 0 },
+			{ label: '−25% to 0%', subtitle: 'Moderate reduction', operation: 'in_range', right: [-25, 0] },
+			{ label: '−50% to −25%', subtitle: 'Strong reduction', operation: 'in_range', right: [-50, -25] },
+			{ label: 'Below −50%', subtitle: 'Severe reduction', operation: 'less', right: -50 },
+		],
 	},
-	{ field: 'price_earnings_growth_ttm', label: 'PEG', unit: 'number' },
-	{ field: 'return_on_equity_fq', label: 'ROE', unit: 'percent' },
-	{ field: 'beta_1_year', label: 'Beta', unit: 'number' },
-	{ field: 'volume', label: 'Vol', unit: 'abbr' },
+	{
+		field: 'price_earnings_growth_ttm',
+		label: 'PEG',
+		unit: 'number',
+		options: [
+			{ label: 'Above 3', subtitle: 'Extremely high', operation: 'greater', right: 3 },
+			{ label: '2 to 3', subtitle: 'Very high', operation: 'in_range', right: [2, 3] },
+			{ label: '1.5 to 2', subtitle: 'High', operation: 'in_range', right: [1.5, 2] },
+			{ label: '1 to 1.5', subtitle: 'Moderate', operation: 'in_range', right: [1, 1.5] },
+			{ label: '0.5 to 1', subtitle: 'Low', operation: 'in_range', right: [0.5, 1] },
+			{ label: '0 to 0.5', subtitle: 'Very low', operation: 'in_range', right: [0, 0.5] },
+			{ label: 'Below 0', subtitle: 'Negative', operation: 'less', right: 0 },
+		],
+	},
+	{
+		field: 'return_on_equity_fq',
+		label: 'ROE',
+		unit: 'percent',
+		options: [
+			{ label: 'Above 30%', subtitle: 'Very high', operation: 'greater', right: 30 },
+			{ label: '20% to 30%', subtitle: 'High', operation: 'in_range', right: [20, 30] },
+			{ label: '10% to 20%', subtitle: 'Moderate', operation: 'in_range', right: [10, 20] },
+			{ label: '5% to 10%', subtitle: 'Low', operation: 'in_range', right: [5, 10] },
+			{ label: '0% to 5%', subtitle: 'Very low', operation: 'in_range', right: [0, 5] },
+			{ label: 'Above 0%', subtitle: 'Positive', operation: 'greater', right: 0 },
+			{ label: '0% and below', subtitle: 'Zero and negative', operation: 'eless', right: 0 },
+			{ label: '−15% to 0%', subtitle: 'Moderate loss', operation: 'in_range', right: [-15, 0] },
+			{ label: '−30% to −15%', subtitle: 'Substantial loss', operation: 'in_range', right: [-30, -15] },
+			{ label: 'Below −30%', subtitle: 'Severe loss', operation: 'less', right: -30 },
+		],
+	},
+	{
+		field: 'beta_5_year',
+		label: 'Beta',
+		unit: 'number',
+		options: [
+			{ label: 'Above 1.5', subtitle: 'Very high volatility', operation: 'greater', right: 1.5 },
+			{ label: '1.1 to 1.5', subtitle: 'High volatility', operation: 'in_range', right: [1.1, 1.5] },
+			{ label: '0.9 to 1.1', subtitle: 'Near market volatility', operation: 'in_range', right: [0.9, 1.1] },
+			{ label: '0.5 to 0.9', subtitle: 'Low volatility', operation: 'in_range', right: [0.5, 0.9] },
+			{ label: '0 to 0.5', subtitle: 'Very low volatility', operation: 'in_range', right: [0, 0.5] },
+			{ label: 'Above 0', subtitle: 'Positive sensitivity', operation: 'greater', right: 0 },
+			{ label: 'Below 0', subtitle: 'Inverse sensitivity', operation: 'less', right: 0 },
+		],
+	},
 ];
 
+/** The "Perf %" chip's date-range sub-dropdown just swaps which field the value ladder applies to. */
+export const PERF_PERIODS: { label: string; field: string }[] = [
+	{ label: '1 week', field: 'Perf.W' },
+	{ label: '1 month', field: 'Perf.1M' },
+	{ label: '3 months', field: 'Perf.3M' },
+	{ label: '6 months', field: 'Perf.6M' },
+	{ label: 'Year to date', field: 'Perf.YTD' },
+	{ label: '1 year', field: 'Perf.Y' },
+	{ label: '5 years', field: 'Perf.5Y' },
+	{ label: '10 years', field: 'Perf.10Y' },
+	{ label: 'All time', field: 'Perf.All' },
+];
+
+export const PERF_DEFAULT_FIELD = 'Perf.YTD';
+
+export type DateRangeOption = {
+	label: string;
+	operation: 'in_day_range' | 'in_week_range' | 'in_month_range';
+	right: [number, number];
+};
+
+export const RECENT_EARNINGS_FIELD = 'earnings_release_trading_date_fq';
+export const UPCOMING_EARNINGS_FIELD = 'earnings_release_next_trading_date_fq';
+
+export const RECENT_EARNINGS_OPTIONS: DateRangeOption[] = [
+	{ label: 'Current trading day', operation: 'in_day_range', right: [0, 0] },
+	{ label: 'Previous day', operation: 'in_day_range', right: [-1, -1] },
+	{ label: 'Previous 5 days', operation: 'in_day_range', right: [-5, -1] },
+	{ label: 'This week', operation: 'in_week_range', right: [0, 0] },
+	{ label: 'Previous week', operation: 'in_week_range', right: [-1, -1] },
+	{ label: 'This month', operation: 'in_month_range', right: [0, 0] },
+];
+
+export const UPCOMING_EARNINGS_OPTIONS: DateRangeOption[] = [
+	{ label: 'Current trading day', operation: 'in_day_range', right: [0, 0] },
+	{ label: 'Next day', operation: 'in_day_range', right: [1, 1] },
+	{ label: 'Next 5 days', operation: 'in_day_range', right: [1, 5] },
+	{ label: 'This week', operation: 'in_week_range', right: [0, 0] },
+	{ label: 'Next week', operation: 'in_week_range', right: [1, 1] },
+	{ label: 'This month', operation: 'in_month_range', right: [0, 0] },
+];
+
+/** Value sent is Title Case; label is the sentence-case text TradingView displays. */
 export const SECTORS = [
-	'Commercial Services',
-	'Communications',
-	'Consumer Durables',
-	'Consumer Non-Durables',
-	'Consumer Services',
-	'Distribution Services',
-	'Electronic Technology',
-	'Energy Minerals',
-	'Finance',
-	'Health Services',
-	'Health Technology',
-	'Industrial Services',
-	'Miscellaneous',
-	'Non-Energy Minerals',
-	'Process Industries',
-	'Producer Manufacturing',
-	'Retail Trade',
-	'Technology Services',
-	'Transportation',
-	'Utilities',
+	{ value: 'Commercial Services', label: 'Commercial services' },
+	{ value: 'Communications', label: 'Communications' },
+	{ value: 'Consumer Durables', label: 'Consumer durables' },
+	{ value: 'Consumer Non-Durables', label: 'Consumer non-durables' },
+	{ value: 'Consumer Services', label: 'Consumer services' },
+	{ value: 'Distribution Services', label: 'Distribution services' },
+	{ value: 'Electronic Technology', label: 'Electronic technology' },
+	{ value: 'Energy Minerals', label: 'Energy minerals' },
+	{ value: 'Finance', label: 'Finance' },
+	{ value: 'Health Services', label: 'Health services' },
+	{ value: 'Health Technology', label: 'Health technology' },
+	{ value: 'Industrial Services', label: 'Industrial services' },
+	{ value: 'Miscellaneous', label: 'Miscellaneous' },
+	{ value: 'Non-Energy Minerals', label: 'Non-energy minerals' },
+	{ value: 'Process Industries', label: 'Process industries' },
+	{ value: 'Producer Manufacturing', label: 'Producer manufacturing' },
+	{ value: 'Retail Trade', label: 'Retail trade' },
+	{ value: 'Technology Services', label: 'Technology services' },
+	{ value: 'Transportation', label: 'Transportation' },
+	{ value: 'Utilities', label: 'Utilities' },
 ];
 
 export const ANALYST_RATINGS = [
-	{ value: 'StrongBuy', label: 'Strong buy' },
-	{ value: 'Buy', label: 'Buy' },
-	{ value: 'Neutral', label: 'Neutral' },
-	{ value: 'Sell', label: 'Sell' },
 	{ value: 'StrongSell', label: 'Strong sell' },
+	{ value: 'Sell', label: 'Sell' },
+	{ value: 'Neutral', label: 'Neutral' },
+	{ value: 'Buy', label: 'Buy' },
+	{ value: 'StrongBuy', label: 'Strong buy' },
 	{ value: 'NoRating', label: 'No rating' },
 ];
 
+/** Dropdown order + labels exactly as TradingView's Index chip shows them. */
 export const INDEXES = [
-	'IDX:LQ45',
-	'IDX:IDX30',
-	'IDX:IDX80',
-	'IDX:KOMPAS100',
-	'IDX:ISSI',
-	'IDX:JII',
-	'IDX:JII70',
-	'IDX:IDXBUMN20',
-	'IDX:IDXESGL',
-	'IDX:ESGSKEHATI',
-	'IDX:ESGQKEHATI',
-	'IDX:SRI_KEHATI',
-	'IDX:IDXG30',
-	'IDX:IDXQ30',
-	'IDX:IDXV30',
-	'IDX:IDXHIDIV20',
-	'IDX:IDXSMC_COM',
-	'IDX:IDXSMC_LIQ',
-	'IDX:IDXSHAGROW',
-	'IDX:IDXMESBUMN',
-	'IDX:IDXVESTA28',
-	'IDX:IDXLQ45LCL',
-	'IDX:INFOBANK15',
-	'IDX:INVESTOR33',
-	'IDX:BISNIS_27',
-	'IDX:MNC36',
-	'IDX:ECONOMIC30',
-	'IDX:PRIMBANK10',
-	'IDX:SMINFRA18',
-	'IDX:I_GRADE',
-].map((v) => ({ value: v, label: v.replace('IDX:', '') }));
-
-export const EARNINGS_DAY_OPTIONS = [
-	{ value: 0, label: 'Today' },
-	{ value: 7, label: '7 days' },
-	{ value: 30, label: '30 days' },
-	{ value: 90, label: '90 days' },
+	{ value: 'IDX:IDX30', label: 'IDX30 · IDX 30' },
+	{ value: 'IDX:LQ45', label: 'LQ45 · IDX LQ45' },
+	{ value: 'IDX:ISSI', label: 'ISSI · Indonesia Sharia Stock Index' },
+	{ value: 'IDX:JII70', label: 'JII70 · Jakarta Islamic 70 Index' },
+	{ value: 'IDX:JII', label: 'JII · Jakarta Islamic Index' },
+	{ value: 'IDX:KOMPAS100', label: 'KOMPAS100 · IDX Kompas 100' },
+	{ value: 'IDX:IDXMESBUMN', label: 'IDXMESBUMN · IDX-MES BUMN 17' },
+	{ value: 'IDX:IDXSHAGROW', label: 'IDXSHAGROW · IDX Sharia Growth' },
+	{ value: 'IDX:IDX80', label: 'IDX80 · IDX 80' },
+	{ value: 'IDX:IDXBUMN20', label: 'IDXBUMN20 · IDX BUMN20' },
+	{ value: 'IDX:IDXHIDIV20', label: 'IDXHIDIV20 · IDX High Dividend 20' },
+	{ value: 'IDX:IDXSMC_COM', label: 'IDXSMC_COM · IDX SMC Composite' },
+	{ value: 'IDX:INFOBANK15', label: 'INFOBANK15 · Infobank 15' },
+	{ value: 'IDX:SRI_KEHATI', label: 'SRI_KEHATI · SRI-KEHATI' },
+	{ value: 'IDX:ESGQKEHATI', label: 'ESGQKEHATI · ESG Quality 45 IDX KEHATI' },
+	{ value: 'IDX:IDXESGL', label: 'IDXESGL · IDX ESG Leaders' },
+	{ value: 'IDX:IDXG30', label: 'IDXG30 · IDX Growth 30' },
+	{ value: 'IDX:PRIMBANK10', label: 'PRIMBANK10 · IDX PEFINDO Prime Bank' },
+	{ value: 'IDX:BISNIS_27', label: 'BISNIS_27 · JSX BISNIS 27' },
+	{ value: 'IDX:ESGSKEHATI', label: 'ESGSKEHATI · ESG Sector Leaders IDX KEHATI' },
+	{ value: 'IDX:IDXLQ45LCL', label: 'IDXLQ45LCL · IDX LQ45 Low Carbon Leaders' },
+	{ value: 'IDX:IDXV30', label: 'IDXV30 · IDX Value 30' },
+	{ value: 'IDX:I_GRADE', label: 'I_GRADE · PEFINDO i-Grade' },
+	{ value: 'IDX:ECONOMIC30', label: 'ECONOMIC30 · IDX Cyclical Economy 30' },
+	{ value: 'IDX:IDXQ30', label: 'IDXQ30 · IDX Quality 30' },
+	{ value: 'IDX:IDXSMC_LIQ', label: 'IDXSMC_LIQ · IDX SMC Liquid' },
+	{ value: 'IDX:INVESTOR33', label: 'INVESTOR33 · Investor 33' },
+	{ value: 'IDX:MNC36', label: 'MNC36 · MNC36' },
+	{ value: 'IDX:SMINFRA18', label: 'SMINFRA18 · SMinfra 18' },
+	{ value: 'IDX:IDXVESTA28', label: 'IDXVESTA28 · IDX Infovesta Multi Factor 28' },
+	{ value: 'STOXX:EDE15BP', label: 'EDE15BP · STOXX Emerging Markets 1500' },
+	{ value: 'STOXX:SXABCP', label: 'SXABCP · STOXX Asia 100' },
+	{ value: 'STOXX:SXEA18P', label: 'SXEA18P · STOXX East Asia 1800' },
+	{ value: 'STOXX:SXEAXJP', label: 'SXEAXJP · STOXX East Asia 1800 ex Japan' },
+	{ value: 'STOXX:EDE5P', label: 'EDE5P · STOXX Emerging Markets 50' },
 ];

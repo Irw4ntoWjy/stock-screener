@@ -11,7 +11,8 @@ import {
 	ScreenerTabId,
 	TickerView,
 } from '../fundamental-page-schema';
-import { getRequestColumns } from '../screener-config';
+import { getRequestColumns, SESSION_FIELDS } from '../screener-config';
+import { isStaleSession } from '../market-hours';
 
 // TradingView scanner, scoped to IDX by the `indonesia` path segment.
 // Called server-side only: no CORS, and one place to cache.
@@ -29,6 +30,10 @@ const leaf = (
 	operation: string,
 	right?: unknown
 ): ScanOperand => ({ expression: { left, operation, right } });
+
+// Added-column fields come from the browser, so only plain field names pass.
+const FIELD_NAME = /^[A-Za-z0-9_.-]+$/;
+const MAX_EXTRA_FIELDS = 60;
 
 const hasItems = (arr?: unknown[]): arr is unknown[] =>
 	Array.isArray(arr) && arr.length > 0;
@@ -49,30 +54,11 @@ const buildFilter = (filters: ScreenerFilters): ScanGroup => {
 	if (hasItems(filters.ratings))
 		operands.push(leaf('AnalystRating', 'in_range', filters.ratings));
 
-	for (const [field, range] of Object.entries(filters.ranges ?? {})) {
-		const hasMin = typeof range.min === 'number' && !isNaN(range.min);
-		const hasMax = typeof range.max === 'number' && !isNaN(range.max);
-		if (hasMin && hasMax)
-			operands.push(leaf(field, 'in_range', [range.min, range.max]));
-		else if (hasMin) operands.push(leaf(field, 'egreater', range.min));
-		else if (hasMax) operands.push(leaf(field, 'eless', range.max));
-	}
+	for (const [field, condition] of Object.entries(filters.conditions ?? {}))
+		operands.push(leaf(field, condition.operation, condition.right));
 
-	if (typeof filters.recentEarningsDays === 'number')
-		operands.push(
-			leaf('earnings_release_date', 'in_day_range', [
-				-filters.recentEarningsDays,
-				0,
-			])
-		);
-
-	if (typeof filters.upcomingEarningsDays === 'number')
-		operands.push(
-			leaf('earnings_release_next_date', 'in_day_range', [
-				0,
-				filters.upcomingEarningsDays,
-			])
-		);
+	for (const added of Object.values(filters.custom ?? {}))
+		operands.push(leaf(added.expr.left, added.expr.operation, added.expr.right));
 
 	return { operator: 'and', operands };
 };
@@ -121,19 +107,26 @@ const toSymbolset = (indexes?: string[]) =>
 export async function scanIdxStocks({
 	tab,
 	filters = {},
+	extraFields = [],
 	force = false,
 }: {
 	tab: ScreenerTabId;
 	filters?: ScreenerFilters;
+	/** Fields for columns the user added on top of the tab's own. */
+	extraFields?: string[];
 	force?: boolean;
 }): Promise<ScreenerResult> {
-	const key = JSON.stringify({ tab, filters });
+	const extras = [...new Set(extraFields)]
+		.filter((f) => FIELD_NAME.test(f))
+		.sort()
+		.slice(0, MAX_EXTRA_FIELDS);
+	const key = JSON.stringify({ tab, filters, extras });
 	const hit = cache.get(key);
 	if (!force && hit && Date.now() - hit.fetchedAt < CACHE_TTL_MS) {
 		return hit;
 	}
 
-	const columns = getRequestColumns(tab);
+	const columns = getRequestColumns(tab, extras);
 	const symbolset = toSymbolset(filters.indexes);
 	const payload = {
 		columns,
@@ -161,10 +154,29 @@ export async function scanIdxStocks({
 		throw new Error(`TradingView scanner error: ${res.error}`);
 	}
 
+	const rows = toRows(res, columns);
+	// Every row carries the same daily-bar stamp, so the first one that has it
+	// dates the whole result.
+	const stamped = rows.find((r) => typeof r.time === 'number');
+	const marketTime = stamped?.time as number | undefined;
+
+	// Dropped at the source rather than in the cell renderer, so sorting, the
+	// row count and the Excel export all agree with what is on screen.
+	const staleSession = isStaleSession(marketTime);
+	if (staleSession)
+		for (const row of rows)
+			for (const field of SESSION_FIELDS) row[field] = undefined;
+
 	const result: ScreenerResult = {
-		rows: toRows(res, columns),
+		rows,
 		totalCount: res.totalCount ?? 0,
 		fetchedAt: Date.now(),
+		marketTime,
+		staleSession,
+		updateMode:
+			typeof stamped?.update_mode === 'string'
+				? stamped.update_mode
+				: undefined,
 	};
 
 	if (cache.size >= CACHE_MAX_ENTRIES) {

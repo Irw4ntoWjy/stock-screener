@@ -2,7 +2,11 @@
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { Column, ColumnDef } from '@tanstack/react-table';
+import {
+	Column,
+	ColumnDef,
+	HeaderContext,
+} from '@tanstack/react-table';
 import {
 	ArrowDown,
 	ArrowUp,
@@ -13,8 +17,10 @@ import {
 	ChevronsUp,
 	ChevronUp,
 	Minus,
+	X,
 } from 'lucide-react';
 import Link from 'next/link';
+import { AddColumnMenu } from './component/add-column-menu';
 import { SymbolCell } from './component/symbol-cell';
 import {
 	abbreviate,
@@ -23,14 +29,24 @@ import {
 	formatPercent,
 	formatPrice,
 	formatUnixDate,
+	idxIndexCodes,
 	isNum,
+	LOT_SIZE,
 	ratingLabel,
 	ratingRank,
 } from './format';
-import { ScreenerRow, ScreenerTabId } from './fundamental-page-schema';
+import {
+	ScreenerRow,
+	ScreenerTabId,
+} from './fundamental-page-schema';
 import { ScreenerColumn, getTab } from './screener-config';
 
-const TEXT_FORMATS = new Set(['text', 'rating', 'patterns']);
+const TEXT_FORMATS = new Set([
+	'text',
+	'rating',
+	'patterns',
+	'indexes',
+]);
 
 export const isNumericColumn = (c: ScreenerColumn) =>
 	!TEXT_FORMATS.has(c.format);
@@ -46,13 +62,22 @@ const Currency = ({ code }: { code: unknown }) =>
 		</span>
 	) : null;
 
-function RatingCell({ raw, text }: { raw: unknown; text: unknown }) {
+function RatingCell({
+	raw,
+	text,
+}: {
+	raw: unknown;
+	text: unknown;
+}) {
 	const label =
 		(typeof text === 'string' && text) || ratingLabel(raw);
 	if (!label) return <Empty />;
 
 	const key = typeof raw === 'string' ? raw : label;
-	const map: Record<string, { Icon: typeof Minus; cls: string }> = {
+	const map: Record<
+		string,
+		{ Icon: typeof Minus; cls: string }
+	> = {
 		StrongBuy: { Icon: ChevronsUp, cls: 'text-blue-500' },
 		Buy: { Icon: ChevronUp, cls: 'text-blue-500' },
 		Neutral: { Icon: Minus, cls: 'text-muted-foreground' },
@@ -65,7 +90,9 @@ function RatingCell({ raw, text }: { raw: unknown; text: unknown }) {
 	};
 
 	return (
-		<span className={cn('inline-flex items-center gap-1.5', cls)}>
+		<span
+			className={cn('inline-flex items-center gap-1.5', cls)}
+		>
 			<Icon className="size-3.5" />
 			{label}
 		</span>
@@ -95,21 +122,36 @@ export function ValueCell({
 			return (
 				<RatingCell
 					raw={v}
-					text={col.displayField ? row[col.displayField] : undefined}
+					text={
+						col.displayField ? row[col.displayField] : undefined
+					}
 				/>
 			);
 		case 'patterns': {
 			const list = Array.isArray(v)
 				? v.filter(Boolean).map(String)
 				: typeof v === 'string' && v
-				? [v]
-				: [];
+					? [v]
+					: [];
 			return list.length ? (
 				<span
 					className="block max-w-[220px] truncate"
 					title={list.join(', ')}
 				>
 					{list.join(', ')}
+				</span>
+			) : (
+				<Empty />
+			);
+		}
+		case 'indexes': {
+			const codes = idxIndexCodes(v);
+			return codes.length ? (
+				<span
+					className="block max-w-[260px] truncate"
+					title={codes.join(', ')}
+				>
+					{codes.join(', ')}
 				</span>
 			) : (
 				<Empty />
@@ -158,6 +200,19 @@ export function ValueCell({
 			return formatPercent(v);
 		case 'volume':
 			return abbreviate(v);
+		case 'lot':
+			return formatInteger(v / LOT_SIZE);
+		case 'fundamental':
+			return (
+				<>
+					{Math.abs(v) >= 1e6 ? abbreviate(v) : formatNumber(v)}
+					<Currency code={row.fundamental_currency_code} />
+				</>
+			);
+		case 'auto':
+			return Math.abs(v) >= 1e6
+				? abbreviate(v)
+				: formatNumber(v);
 		case 'integer':
 			return formatInteger(v);
 		default:
@@ -186,8 +241,12 @@ function SortHeader({
 				alignRight && 'justify-end'
 			)}
 		>
-			{sorted === 'asc' && <ArrowUp className="size-3 shrink-0" />}
-			{sorted === 'desc' && <ArrowDown className="size-3 shrink-0" />}
+			{sorted === 'asc' && (
+				<ArrowUp className="size-3 shrink-0" />
+			)}
+			{sorted === 'desc' && (
+				<ArrowDown className="size-3 shrink-0" />
+			)}
 			<span
 				className={cn(
 					'flex flex-col leading-tight',
@@ -213,81 +272,129 @@ const sortValue = (col: ScreenerColumn, row: ScreenerRow) => {
 		return isNum(v) ? v : ratingRank(v);
 	if (col.format === 'patterns')
 		return Array.isArray(v) ? v.length || undefined : undefined;
+	if (col.format === 'indexes')
+		return idxIndexCodes(v).length || undefined;
 	if (TEXT_FORMATS.has(col.format))
 		return typeof v === 'string' && v ? v : undefined;
 	return isNum(v) ? v : undefined;
 };
 
-export const getFundamentalColumns = (
-	tabId: ScreenerTabId,
-	totalCount: number
-): ColumnDef<ScreenerRow>[] => [
-	{
-		id: 'symbol',
-		accessorFn: (row) => row.ticker,
-		sortingFn: 'alphanumeric',
-		header: ({ column }) => (
+const valueColumn = (
+	col: ScreenerColumn,
+	onRemove?: (col: ScreenerColumn) => void
+): ColumnDef<ScreenerRow> => ({
+	id: col.field,
+	accessorFn: (row) => sortValue(col, row),
+	sortUndefined: 'last',
+	sortDescFirst: isNumericColumn(col),
+	sortingFn: col.format === 'text' ? 'text' : 'basic',
+	header: ({ column }) => {
+		const sort = (
 			<SortHeader
 				column={column}
-				label="Symbol"
-				sub={totalCount.toLocaleString('en-US')}
+				label={col.label}
+				sub={col.sub}
+				alignRight={isNumericColumn(col)}
 			/>
-		),
-		cell: ({ row }) => <SymbolCell row={row.original} />,
-		meta: { sticky: true },
+		);
+		if (!onRemove) return sort;
+		return (
+			<div
+				className={cn(
+					'group/col flex items-center gap-1',
+					isNumericColumn(col) && 'flex-row-reverse'
+				)}
+			>
+				{sort}
+				<button
+					type="button"
+					title="Remove column"
+					onClick={() => onRemove(col)}
+					className="shrink-0 rounded-sm p-0.5 text-muted-foreground opacity-0 hover:bg-background hover:text-foreground group-hover/col:opacity-100 focus-visible:opacity-100 cursor-pointer"
+				>
+					<X className="size-3" />
+				</button>
+			</div>
+		);
 	},
-	...getTab(tabId).columns.map(
-		(col): ColumnDef<ScreenerRow> => ({
-			id: col.field,
-			accessorFn: (row) => sortValue(col, row),
-			sortUndefined: 'last',
-			sortDescFirst: isNumericColumn(col),
-			sortingFn: col.format === 'text' ? 'text' : 'basic',
+	cell: ({ row }) => <ValueCell col={col} row={row.original} />,
+	meta: { alignRight: isNumericColumn(col) },
+});
+
+/**
+ * flexRender mounts a header function as a component, so a closure rebuilt with
+ * the columns would remount the menu and close it on every pick. This one keeps
+ * its identity and reads what changes from the table's meta.
+ */
+function AddColumnHeader({
+	table,
+}: HeaderContext<ScreenerRow, unknown>) {
+	const menu = table.options.meta?.addColumn;
+	return menu ? (
+		<div className="flex justify-end">
+			<AddColumnMenu {...menu} />
+		</div>
+	) : null;
+}
+
+export const getFundamentalColumns = (
+	tabId: ScreenerTabId,
+	totalCount: number,
+	added: ScreenerColumn[],
+	onRemoveAdded: (col: ScreenerColumn) => void
+): ColumnDef<ScreenerRow>[] => {
+	const tabColumns = getTab(tabId).columns;
+
+	return [
+		{
+			id: 'symbol',
+			accessorFn: (row) => row.ticker,
+			sortingFn: 'alphanumeric',
 			header: ({ column }) => (
 				<SortHeader
 					column={column}
-					label={col.label}
-					sub={col.sub}
-					alignRight={isNumericColumn(col)}
+					label="Symbol"
+					sub={totalCount.toLocaleString('en-US')}
 				/>
 			),
+			cell: ({ row }) => <SymbolCell row={row.original} />,
+			meta: { sticky: true },
+		},
+		...tabColumns.map((col) => valueColumn(col)),
+		...added.map((col) => valueColumn(col, onRemoveAdded)),
+		{
+			id: 'action',
+			enableSorting: false,
+			header: AddColumnHeader,
 			cell: ({ row }) => (
-				<ValueCell col={col} row={row.original} />
-			),
-			meta: { alignRight: isNumericColumn(col) },
-		})
-	),
-	{
-		id: 'action',
-		enableSorting: false,
-		header: () => null,
-		cell: ({ row }) => (
-			<div className="flex justify-end gap-1">
-				<Button
-					asChild
-					size="sm"
-					variant="ghost"
-					title="Company profile"
-					className="size-7 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-				>
-					<Link
-						href={`/company-profile/${row.original.ticker}?from=fundamental`}
+				<div className="flex justify-end gap-1">
+					<Button
+						asChild
+						size="sm"
+						variant="ghost"
+						title="Company profile"
+						className="size-7 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
 					>
-						<Building className="size-4" />
-					</Link>
-				</Button>
-				<Button
-					asChild
-					size="sm"
-					variant="ghost"
-					title="Chart"
-					className="size-7 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-				>
-					<Link href={`/chart/${row.original.ticker}`}>
-						<ChartLine className="size-4" />
-					</Link>
-				</Button>
-			</div>
-		),
-	},
-];
+						<Link
+							href={`/company-profile/${row.original.ticker}?from=fundamental`}
+						>
+							<Building className="size-4" />
+						</Link>
+					</Button>
+					<Button
+						asChild
+						size="sm"
+						variant="ghost"
+						title="Chart"
+						className="size-7 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+					>
+						<Link href={`/chart/${row.original.ticker}`}>
+							<ChartLine className="size-4" />
+						</Link>
+					</Button>
+				</div>
+			),
+			meta: { stickyRight: true },
+		},
+	];
+};
