@@ -410,12 +410,12 @@ export default function FundamentalPage({
 		.join(' · ');
 
 	return (
-		<div className="bg-card w-full h-full border border-t-0 rounded-b-lg px-4 py-4 flex flex-col gap-3 min-h-0">
+		<div className="bg-card w-full min-h-full border border-t-0 rounded-b-lg px-3 py-3 sm:px-4 sm:py-4 flex flex-col gap-3">
 			{/* Title */}
 			<div className="flex flex-wrap items-end justify-between gap-3">
 				<div>
-					<h2 className="text-2xl font-semibold mb-1 flex items-center gap-2">
-						<div className="h-8 w-1 bg-primary rounded-full" />
+					<h2 className="text-xl sm:text-2xl font-semibold mb-1 flex items-center gap-2">
+						<div className="h-7 sm:h-8 w-1 bg-primary rounded-full" />
 						Stock Screener
 					</h2>
 					<p className="text-muted-foreground text-sm">
@@ -424,8 +424,8 @@ export default function FundamentalPage({
 					</p>
 				</div>
 
-				<div className="flex items-center gap-2">
-					<div className="relative w-64">
+				<div className="flex w-full items-center gap-2 sm:w-auto">
+					<div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
 						<Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
 						<Input
 							value={search}
@@ -450,16 +450,17 @@ export default function FundamentalPage({
 					</div>
 					<Button
 						onClick={handleExport}
-						className="bg-primary hover:bg-primary/90"
+						title="Export to Excel"
+						className="shrink-0 bg-primary hover:bg-primary/90"
 					>
 						<FileDown className="size-4" />
-						Export to Excel
+						<span className="hidden sm:inline">Export to Excel</span>
 					</Button>
 				</div>
 			</div>
 
-			{/* Filter chips */}
-			<div className="flex flex-wrap items-center gap-2">
+			{/* Filter chips: one swipeable row on phones, wrapped from sm up */}
+			<div className="-mx-3 flex items-center gap-2 overflow-x-auto px-3 pb-1 [scrollbar-width:none] *:shrink-0 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
 				<MultiSelectChip
 					label="Index"
 					options={INDEXES}
@@ -525,7 +526,7 @@ export default function FundamentalPage({
 
 			{/* Tabs */}
 			<div className="flex items-center justify-between gap-3 border-b">
-				<div className="-mb-px flex self-end overflow-x-auto overflow-y-hidden">
+				<div className="-mb-px flex min-w-0 self-end overflow-x-auto overflow-y-hidden">
 					{SCREENER_TABS.map((t) => (
 						<button
 							key={t.id}
@@ -583,11 +584,13 @@ export default function FundamentalPage({
 			)}
 
 			{/* Table */}
-			<div className="relative flex-1 min-h-0">
-				{/* "auto": scrollbars stay visible whenever the table overflows, not only on hover */}
+			{/* fills what is left on tall screens; never shorter than a usable list */}
+			<div className="relative flex-1 min-h-[60dvh] sm:min-h-[420px] lg:min-h-[280px]">
+				{/* "auto": scrollbars stay visible whenever the table overflows, not only on hover;
+				    `!absolute` beats the position: relative Radix sets inline */}
 				<ScrollArea.Root
 					type="auto"
-					className="h-full w-full rounded-md border border-border overflow-hidden"
+					className="!absolute inset-0 rounded-md border border-border overflow-hidden"
 				>
 					<ScrollArea.Viewport className="h-full w-full">
 						<ScreenerTable table={table} />

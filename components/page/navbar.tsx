@@ -9,6 +9,7 @@ import {
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { MarketStatusIndicator } from './market-status-indicator';
+import { NotificationBell } from './notification-bell';
 import { ThemeSwitch } from './theme-switch';
 
 export default function Navbar() {
@@ -25,12 +26,12 @@ export default function Navbar() {
 
 	return (
 		<header className="bg-card backdrop-blur supports-[backdrop-filter]:bg-card rounded-t-lg border border-b">
-			<div className="container max-w-full px-4">
-				<div className="flex h-16 items-center justify-between">
-					<div className="flex items-center gap-8">
+			<div className="container max-w-full px-3 sm:px-4">
+				<div className="flex h-14 sm:h-16 items-center justify-between gap-2">
+					<div className="flex min-w-0 items-center gap-2 sm:gap-8">
 						<Link
 							href="/technical"
-							className="flex items-center gap-2 font-bold text-xl"
+							className="flex shrink-0 items-center gap-2 font-bold text-lg sm:text-xl"
 						>
 							<BarChart3 className="h-6 w-6 text-primary" />
 							<span className="bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
@@ -38,29 +39,31 @@ export default function Navbar() {
 							</span>
 						</Link>
 
-						<nav className="hidden md:flex items-center gap-2">
+						<nav className="flex items-center gap-1 sm:gap-2">
 							{navItems.map((item) => {
 								const isActive = pathname === item.path;
 								return (
 									<Link
 										key={item.path}
 										href={item.path}
-										className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+										title={item.label}
+										className={`flex items-center gap-2 px-2.5 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors ${
 											isActive
 												? 'bg-primary text-primary-foreground'
 												: 'text-muted-foreground hover:text-primary-foreground hover:bg-primary/80'
 										}`}
 									>
 										<item.icon className="size-4" />
-										{item.label}
+										<span className="hidden sm:inline">{item.label}</span>
 									</Link>
 								);
 							})}
 						</nav>
 					</div>
 
-					<div className="flex gap-6">
-						<div className="flex items-center gap-4">
+					<div className="flex shrink-0 gap-6">
+						<div className="flex items-center gap-2 sm:gap-4">
+							<NotificationBell />
 							<MarketStatusIndicator />
 							<ThemeSwitch />
 						</div>

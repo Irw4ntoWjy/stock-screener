@@ -15,7 +15,7 @@ if (!BACKEND_URL && process.env.NODE_ENV === 'production') {
 	throw new Error('env is required in production');
 }
 
-type HttpMethod = 'GET' | 'POST';
+type HttpMethod = 'GET' | 'POST' | 'PATCH';
 
 type CacheMode =
 	| 'default'

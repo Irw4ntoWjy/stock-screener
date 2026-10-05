@@ -88,10 +88,11 @@ export const MaSettingsPopover = ({ maConfig }: PageProps) => {
 			<PopoverTrigger asChild>
 				<Button
 					variant="outline"
-					className="gap-2 bg-border hover:bg-ring text-foreground transition-colors"
+					title="MA Settings"
+					className="shrink-0 gap-2 bg-border hover:bg-ring text-foreground transition-colors"
 				>
 					<Settings2 className="size-4" />
-					MA Settings
+					<span className="hidden sm:inline">MA Settings</span>
 				</Button>
 			</PopoverTrigger>
 

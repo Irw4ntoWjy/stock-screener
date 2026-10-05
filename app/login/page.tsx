@@ -36,12 +36,12 @@ export default function Login() {
 	};
 
 	return (
-		<div className="flex items-center justify-center h-full">
-			<Card className="w-full max-w-md bg-white border-0 shadow-xl dark:border-gray-700 p-8">
+		<div className="flex min-h-full items-center justify-center py-4">
+			<Card className="w-full max-w-md bg-white border-0 shadow-xl dark:border-gray-700 p-4 sm:p-8">
 				<CardHeader className="space-y-1">
 					<div className="flex justify-center gap-3 items-center">
-						<TrendingUp className="size-8 text-blue-500" />
-						<CardTitle className="text-2xl text-center text-black">
+						<TrendingUp className="size-7 sm:size-8 shrink-0 text-blue-500" />
+						<CardTitle className="text-xl sm:text-2xl text-center text-black">
 							IDX Stocks Screener
 						</CardTitle>
 					</div>
@@ -49,7 +49,7 @@ export default function Login() {
 						Sign in to your account
 					</CardDescription>
 				</CardHeader>
-				<CardContent className="space-y-4 p-6">
+				<CardContent className="space-y-4 px-0 py-4 sm:p-6">
 					{showOtpForm ? (
 						<ForgotPasswordForm
 							email={userEmail}

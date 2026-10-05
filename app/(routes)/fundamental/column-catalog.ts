@@ -1,20 +1,13 @@
 // Columns the user can add to any tab through the "+" button in the table
-// header. Curated groups come first (every column the preset tabs already
-// know, plus Graham / value); the full TradingView field list is searchable
-// underneath (see server/fetch-tradingview-fields.ts).
+// header: TradingView's own column picker, category for category (see
+// tradingview-columns.ts), plus derived columns under "Custom". The full
+// TradingView field list stays searchable underneath (see
+// server/fetch-tradingview-fields.ts).
 
 import { isNum } from './format';
 import { ScreenerRow } from './fundamental-page-schema';
-import {
-	ColumnFormat,
-	SCREENER_TABS,
-	ScreenerColumn,
-} from './screener-config';
-
-export type CatalogGroup = {
-	label: string;
-	columns: ScreenerColumn[];
-};
+import { ColumnFormat, ScreenerColumn } from './screener-config';
+import { TV_CATEGORIES, TvCategory } from './tradingview-columns';
 
 /**
  * Derived columns, keyed by their `field`. The only arithmetic in the screener
@@ -33,67 +26,39 @@ const COMPUTED: Record<
 	},
 };
 
-const GRAHAM_GROUP: CatalogGroup = {
-	label: 'Graham & value',
-	columns: [
+const CUSTOM_CATEGORY: TvCategory = {
+	id: 'custom',
+	label: 'Custom',
+	sections: [
 		{
-			field: 'graham_numbers_ttm',
-			label: 'Graham number',
-			sub: 'TTM',
-			format: 'moneyPrecise',
-		},
-		{
-			field: 'graham_numbers_fy',
-			label: 'Graham number',
-			sub: 'FY',
-			format: 'moneyPrecise',
-		},
-		{
-			field: 'calc.graham_mos',
-			label: 'Graham MoS %',
-			sub: 'TTM',
-			format: 'change',
-			requires: ['graham_numbers_ttm', 'close'],
-		},
-		{
-			field: 'book_tangible_per_share_fq',
-			label: 'Tangible BV / share',
-			sub: 'FQ',
-			format: 'moneyPrecise',
-		},
-		{
-			field: 'total_shares_outstanding_fundamental',
-			label: 'Shares outstanding',
-			format: 'auto',
-		},
-		{
-			field: 'float_shares_outstanding',
-			label: 'Free float shares',
-			format: 'auto',
+			columns: [
+				{
+					id: 'GrahamMos',
+					label: 'Graham MoS %',
+					variants: [
+						{
+							field: 'calc.graham_mos',
+							label: 'Graham MoS %',
+							sub: 'TTM',
+							format: 'change',
+							requires: ['graham_numbers_ttm', 'close'],
+						},
+					],
+				},
+			],
 		},
 	],
 };
 
-/** Preset tab columns, grouped by the tab they first appear in. */
-const tabGroups = (): CatalogGroup[] => {
-	const seen = new Set(GRAHAM_GROUP.columns.map((c) => c.field));
-	return SCREENER_TABS.map((tab) => ({
-		label: tab.label,
-		columns: tab.columns.filter((c) => {
-			if (seen.has(c.field)) return false;
-			seen.add(c.field);
-			return true;
-		}),
-	})).filter((g) => g.columns.length);
-};
+export const CATALOG: TvCategory[] = [...TV_CATEGORIES, CUSTOM_CATEGORY];
 
-export const CURATED_GROUPS: CatalogGroup[] = [
-	GRAHAM_GROUP,
-	...tabGroups(),
-];
+export const catalogColumns = (category: TvCategory) =>
+	category.sections.flatMap((s) => s.columns);
 
-export const CURATED_FIELDS = new Set(
-	CURATED_GROUPS.flatMap((g) => g.columns.map((c) => c.field))
+export const CATALOG_FIELDS = new Set(
+	CATALOG.flatMap((c) =>
+		catalogColumns(c).flatMap((col) => col.variants.map((v) => v.field))
+	)
 );
 
 // ---- raw TradingView fields -------------------------------------------------

@@ -13,7 +13,7 @@ export default function RoutesLayout({
 			enableSystem
 		>
 			<Navbar />
-			<main className="flex-1 overflow-hidden">{children}</main>
+			<main className="flex-1 min-h-0 overflow-y-auto">{children}</main>
 		</ThemeProvider>
 	);
 }

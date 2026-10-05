@@ -44,7 +44,7 @@ export function SymbolCell({ row }: { row: ScreenerRow }) {
 		typeof row.description === 'string' ? row.description : '';
 
 	return (
-		<div className="flex items-center gap-3 min-w-0">
+		<div className="flex items-center gap-2 sm:gap-3 min-w-0">
 			<SymbolLogo
 				logoid={
 					typeof row.logoid === 'string' ? row.logoid : undefined
@@ -53,7 +53,7 @@ export function SymbolCell({ row }: { row: ScreenerRow }) {
 			/>
 			<Link
 				href={`/company-profile/${row.ticker}?from=fundamental`}
-				title="Open company profile"
+				title={description ? `${description} · open company profile` : 'Open company profile'}
 				className={cn(
 					'shrink-0 w-14 text-center rounded px-1.5 py-0.5 text-xs font-semibold transition-colors',
 					inactive
@@ -65,7 +65,8 @@ export function SymbolCell({ row }: { row: ScreenerRow }) {
 			</Link>
 			<span
 				className={cn(
-					'truncate max-w-[280px] text-sm',
+					// phones keep the pinned column narrow: code + logo only
+					'hidden sm:block truncate max-w-[160px] md:max-w-[280px] text-sm',
 					inactive ? 'text-red-600' : 'text-foreground'
 				)}
 				title={description}

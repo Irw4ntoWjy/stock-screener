@@ -102,6 +102,11 @@ export const financialStatements = z4.object({
 	period: z4.string(),
 	fileName: z4.string(),
 	filePath: z4.string(),
+	// used to mark a statement as read
+	id: z4.string().optional(),
+	isUnread: z4.boolean().optional(),
+	/** UTC without a trailing "Z", e.g. "2026-10-05T15:04:00.123456" */
+	createdAt: z4.string().nullish(),
 });
 
 export type FinancialStatementsSchema = z4.infer<

@@ -50,14 +50,14 @@ export function DataTablePagination({
 	};
 
 	return (
-		<div className="mt-4 flex items-center justify-between">
-			<div className="text-sm text-muted-foreground">
+		<div className="mt-3 flex flex-col items-center gap-2 sm:mt-4 sm:flex-row sm:justify-between">
+			<div className="order-2 text-xs text-muted-foreground sm:order-none sm:text-sm">
 				Showing {startIndex + 1} to {endIndex} of {totalItems}{' '}
 				Stocks
 			</div>
 
-			<Pagination className="flex justify-center">
-				<PaginationContent className="flex items-center gap-1">
+			<Pagination className="mx-0 w-auto">
+				<PaginationContent className="flex items-center gap-0.5 sm:gap-1">
 					<PaginationItem>
 						<PaginationPrevious
 							onClick={() =>
@@ -107,7 +107,7 @@ export function DataTablePagination({
 			</Pagination>
 
 			{fetchTime && (
-				<div className="text-sm text-muted-foreground whitespace-nowrap">
+				<div className="order-3 text-xs text-muted-foreground whitespace-nowrap sm:order-none sm:text-sm">
 					Last fetched at: {fetchTime}
 				</div>
 			)}

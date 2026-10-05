@@ -26,7 +26,7 @@ export default function RootLayout({
 	return (
 		<html lang="en" className="h-full" suppressHydrationWarning>
 			<body
-				className={`${geistSans.variable} ${geistMono.variable} h-full flex flex-col antialiased p-6`}
+				className={`${geistSans.variable} ${geistMono.variable} h-full flex flex-col antialiased p-2 sm:p-4 lg:p-6`}
 			>
 				{children}
 				<Toaster richColors position="top-center" />

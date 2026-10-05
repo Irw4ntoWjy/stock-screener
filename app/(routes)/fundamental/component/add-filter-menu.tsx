@@ -413,7 +413,7 @@ export function AddFilterMenu({
 				</Button>
 			</PopoverTrigger>
 			<PopoverContent
-				className="w-80 p-2 bg-card text-foreground border-border"
+				className="flex w-80 flex-col overflow-hidden p-2 bg-card text-foreground border-border"
 				align="start"
 			>
 				{!catalog ? (
@@ -434,9 +434,9 @@ export function AddFilterMenu({
 						onBack={() => setSelected(undefined)}
 					/>
 				) : (
-					<Command className="bg-card text-foreground">
+					<Command className="min-h-0 flex-1 bg-card text-foreground">
 						<CommandInput placeholder="Search filters..." className="h-9" />
-						<CommandList className="max-h-96">
+						<CommandList className="max-h-96 min-h-0 flex-1">
 							<CommandEmpty>No match.</CommandEmpty>
 							{catalog.categories.map((cat) => (
 								<CommandGroup key={cat.category} heading={cat.category}>

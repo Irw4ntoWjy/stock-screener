@@ -107,7 +107,7 @@ export const ForgotPasswordForm = ({
 							</Label>
 							<p className="text-sm text-muted-foreground text-center px-4">
 								We sent a verification code to{' '}
-								<span className="font-medium">{email}</span>
+								<span className="font-medium break-all">{email}</span>
 							</p>
 						</div>
 

@@ -95,7 +95,8 @@ export function ScreenerTable({
 											: 'text-left',
 										meta?.sticky && 'sticky left-0 z-30',
 										meta?.stickyRight &&
-											'sticky right-0 z-30 border-l shadow-[-6px_0_8px_-6px_rgb(0_0_0/0.15)]'
+											// pinned from md up; on phones it would eat half the width
+											'md:sticky md:right-0 z-30 md:border-l md:shadow-[-6px_0_8px_-6px_rgb(0_0_0/0.15)]'
 									)}
 								>
 									{header.isPlaceholder
@@ -132,7 +133,7 @@ export function ScreenerTable({
 											meta?.sticky &&
 												'sticky left-0 z-10 bg-card group-hover:bg-muted',
 											meta?.stickyRight &&
-												'sticky right-0 z-10 bg-card group-hover:bg-muted border-l shadow-[-6px_0_8px_-6px_rgb(0_0_0/0.15)]'
+												'md:sticky md:right-0 z-10 bg-card group-hover:bg-muted md:border-l md:shadow-[-6px_0_8px_-6px_rgb(0_0_0/0.15)]'
 										)}
 									>
 										{flexRender(
