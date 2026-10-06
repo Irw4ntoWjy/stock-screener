@@ -2,9 +2,11 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-RUN npm install -g pnpm
+# pinned: an unpinned install picks up new pnpm majors that change install rules
+RUN npm install -g pnpm@10.14.0
 
-COPY package.json pnpm-lock.yaml ./
+# pnpm-workspace.yaml holds the approved build scripts (sharp, tailwind oxide, ...)
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY . .
