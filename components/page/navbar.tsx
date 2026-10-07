@@ -12,6 +12,9 @@ import { MarketStatusIndicator } from './market-status-indicator';
 import { NotificationBell } from './notification-bell';
 import { ThemeSwitch } from './theme-switch';
 
+/** package.json version, set at build time in next.config.ts. */
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION;
+
 export default function Navbar() {
 	const pathname = usePathname();
 
@@ -66,6 +69,14 @@ export default function Navbar() {
 							<NotificationBell />
 							<MarketStatusIndicator />
 							<ThemeSwitch />
+							{APP_VERSION && (
+								<span
+									title={`Stocks Tracker v${APP_VERSION}`}
+									className="hidden rounded-full border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline"
+								>
+									v{APP_VERSION}
+								</span>
+							)}
 						</div>
 					</div>
 				</div>
