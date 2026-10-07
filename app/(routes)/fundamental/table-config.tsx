@@ -362,6 +362,7 @@ export const getFundamentalColumns = (
 		{
 			id: 'action',
 			enableSorting: false,
+			enableResizing: false,
 			header: AddColumnHeader,
 			cell: ({ row }) => (
 				<div className="flex justify-end">

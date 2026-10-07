@@ -3,6 +3,8 @@
 import { cn } from '@/lib/utils';
 import {
 	ColumnDef,
+	ColumnSizingState,
+	Header,
 	RowData,
 	TableMeta,
 	flexRender,
@@ -14,6 +16,7 @@ import {
 	SortingState,
 	useReactTable,
 } from '@tanstack/react-table';
+import { ReactNode, PointerEvent as ReactPointerEvent, useEffect, useState } from 'react';
 import { ScreenerRow } from '../fundamental-page-schema';
 import { ScreenerColumn } from '../screener-config';
 
@@ -46,6 +49,21 @@ interface ScreenerTableProps {
 	meta?: TableMeta<ScreenerRow>;
 }
 
+// Per-viewer convenience: column widths the user dragged, keyed by column id.
+// A blocked or wiped store just means every column sizes to its content.
+const WIDTHS_KEY = 'fundamental.column-widths.v1';
+const MIN_WIDTH = 48;
+const CELL_PADDING = 24; // px-3 on both sides
+
+const readWidths = (): ColumnSizingState => {
+	try {
+		const parsed = JSON.parse(localStorage.getItem(WIDTHS_KEY) ?? '{}');
+		return parsed && typeof parsed === 'object' ? parsed : {};
+	} catch {
+		return {};
+	}
+};
+
 export function useScreenerTable({
 	columns,
 	data,
@@ -55,13 +73,34 @@ export function useScreenerTable({
 	onPaginationChange,
 	meta,
 }: ScreenerTableProps) {
+	const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({});
+	const [restored, setRestored] = useState(false);
+
+	// restored after mount: localStorage is not there during SSR
+	useEffect(() => {
+		setColumnSizing(readWidths());
+		setRestored(true);
+	}, []);
+
+	useEffect(() => {
+		if (!restored) return;
+		try {
+			localStorage.setItem(WIDTHS_KEY, JSON.stringify(columnSizing));
+		} catch {
+			// storage unavailable: the widths still apply for this visit
+		}
+	}, [columnSizing, restored]);
+
 	return useReactTable({
 		data,
 		columns,
-		state: { sorting, pagination },
+		state: { sorting, pagination, columnSizing },
 		meta,
 		onSortingChange,
 		onPaginationChange,
+		onColumnSizingChange: setColumnSizing,
+		enableColumnResizing: true,
+		columnResizeMode: 'onChange',
 		getCoreRowModel: getCoreRowModel(),
 		getSortedRowModel: getSortedRowModel(),
 		getPaginationRowModel: getPaginationRowModel(),
@@ -70,6 +109,91 @@ export function useScreenerTable({
 	});
 }
 
+/**
+ * Drag handle on a header's right edge, like a spreadsheet. The drag starts
+ * from the column's rendered width (not a default), so it never jumps;
+ * double-click hands the column back to automatic sizing.
+ */
+function ResizeHandle({ header }: { header: Header<ScreenerRow, unknown> }) {
+	const { column } = header;
+	const table = header.getContext().table;
+	if (!column.getCanResize()) return null;
+
+	const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+		e.preventDefault();
+		e.stopPropagation();
+		const th = e.currentTarget.parentElement;
+		if (!th) return;
+		const startX = e.clientX;
+		const startWidth = th.getBoundingClientRect().width;
+		const move = (ev: PointerEvent) =>
+			table.setColumnSizing((s) => ({
+				...s,
+				[column.id]: Math.max(
+					MIN_WIDTH,
+					Math.round(startWidth + ev.clientX - startX)
+				),
+			}));
+		const up = () => {
+			window.removeEventListener('pointermove', move);
+			window.removeEventListener('pointerup', up);
+			document.body.style.removeProperty('cursor');
+			document.body.style.removeProperty('user-select');
+		};
+		window.addEventListener('pointermove', move);
+		window.addEventListener('pointerup', up);
+		document.body.style.cursor = 'col-resize';
+		document.body.style.userSelect = 'none';
+	};
+
+	const reset = () =>
+		table.setColumnSizing((s) => {
+			const next = { ...s };
+			delete next[column.id];
+			return next;
+		});
+
+	return (
+		<div
+			role="separator"
+			aria-orientation="vertical"
+			aria-label={`Resize ${column.id}`}
+			title="Drag to resize · double-click to fit"
+			onPointerDown={onPointerDown}
+			onDoubleClick={(e) => {
+				e.stopPropagation();
+				reset();
+			}}
+			onClick={(e) => e.stopPropagation()}
+			className="group/resize absolute top-0 right-0 z-10 flex h-full w-2 cursor-col-resize touch-none select-none justify-end"
+		>
+			<span className="my-auto h-1/2 w-px bg-border transition-colors group-hover/resize:h-full group-hover/resize:w-0.5 group-hover/resize:bg-primary" />
+		</div>
+	);
+}
+
+/** A dragged column gets a fixed width; what does not fit is cut off with "…". */
+const Sized = ({
+	width,
+	alignRight,
+	children,
+}: {
+	width?: number;
+	alignRight?: boolean;
+	children: ReactNode;
+}) =>
+	width === undefined ? (
+		<>{children}</>
+	) : (
+		// table cells ignore max-width under auto layout, so the box inside does it
+		<div
+			className={cn('overflow-hidden text-ellipsis', alignRight && 'ml-auto')}
+			style={{ width: Math.max(width - CELL_PADDING, 0) }}
+		>
+			{children}
+		</div>
+	);
+
 export function ScreenerTable({
 	table,
 }: {
@@ -77,6 +201,7 @@ export function ScreenerTable({
 }) {
 	const rows = table.getRowModel().rows;
 	const colCount = table.getVisibleLeafColumns().length;
+	const widths = table.getState().columnSizing;
 
 	return (
 		<table className="w-full caption-bottom text-sm border-separate border-spacing-0">
@@ -89,7 +214,7 @@ export function ScreenerTable({
 								<th
 									key={header.id}
 									className={cn(
-										'h-11 px-3 whitespace-nowrap align-middle border-b bg-muted',
+										'relative h-11 px-3 whitespace-nowrap align-middle border-b bg-muted',
 										meta?.alignRight
 											? 'text-right'
 											: 'text-left',
@@ -99,12 +224,18 @@ export function ScreenerTable({
 											'md:sticky md:right-0 z-30 md:border-l md:shadow-[-6px_0_8px_-6px_rgb(0_0_0/0.15)]'
 									)}
 								>
-									{header.isPlaceholder
-										? null
-										: flexRender(
-												header.column.columnDef.header,
-												header.getContext()
-											)}
+									<Sized
+										width={widths[header.column.id]}
+										alignRight={meta?.alignRight}
+									>
+										{header.isPlaceholder
+											? null
+											: flexRender(
+													header.column.columnDef.header,
+													header.getContext()
+												)}
+									</Sized>
+									<ResizeHandle header={header} />
 								</th>
 							);
 						})}
@@ -136,10 +267,15 @@ export function ScreenerTable({
 												'md:sticky md:right-0 z-10 bg-card group-hover:bg-muted md:border-l md:shadow-[-6px_0_8px_-6px_rgb(0_0_0/0.15)]'
 										)}
 									>
-										{flexRender(
-											cell.column.columnDef.cell,
-											cell.getContext()
-										)}
+										<Sized
+											width={widths[cell.column.id]}
+											alignRight={meta?.alignRight}
+										>
+											{flexRender(
+												cell.column.columnDef.cell,
+												cell.getContext()
+											)}
+										</Sized>
 									</td>
 								);
 							})}
