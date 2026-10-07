@@ -165,9 +165,11 @@ function ResizeHandle({ header }: { header: Header<ScreenerRow, unknown> }) {
 				reset();
 			}}
 			onClick={(e) => e.stopPropagation()}
-			className="group/resize absolute top-0 right-0 z-10 flex h-full w-2 cursor-col-resize touch-none select-none justify-end"
+			// a wider hit area than the line itself, centred on the column edge
+			className="group/resize absolute top-0 -right-1.5 z-10 flex h-full w-3 cursor-col-resize touch-none select-none justify-center"
 		>
-			<span className="my-auto h-1/2 w-px bg-border transition-colors group-hover/resize:h-full group-hover/resize:w-0.5 group-hover/resize:bg-primary" />
+			{/* always-visible divider, so the edges to drag are easy to find */}
+			<span className="my-auto h-3/5 w-0.5 rounded-full bg-muted-foreground/40 transition-all group-hover/resize:h-full group-hover/resize:w-1 group-hover/resize:bg-primary group-active/resize:bg-primary" />
 		</div>
 	);
 }
