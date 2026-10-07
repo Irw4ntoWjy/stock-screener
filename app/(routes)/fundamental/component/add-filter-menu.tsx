@@ -16,41 +16,97 @@ import {
 	PopoverTrigger,
 } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
-import { Check, ChevronLeft, Loader2, Plus } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import {
+	Check,
+	ChevronLeft,
+	ChevronRight,
+	Loader2,
+	Plus,
+	SlidersHorizontal,
+} from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import {
 	AddFilterCatalog,
 	CATALOG_URL,
+	CatalogCategory,
 	CatalogFilter,
+	CatalogValue,
+	defaultChoice,
 	MANUAL_OPERATION_LABELS,
-	MANUAL_SAFE_OPERATIONS,
+	multiSelectOperand,
+	ParamChoice,
 	paramSummary,
 	resolveField,
 	resolvePreset,
 } from '../add-filter-catalog';
+import { categoryIcon } from '../category-icons';
 import { AddedFilter } from '../fundamental-page-schema';
 
 let catalogPromise: Promise<AddFilterCatalog> | undefined;
 const loadCatalog = () => {
 	if (!catalogPromise)
-		catalogPromise = fetch(CATALOG_URL).then((r) => {
-			if (!r.ok) throw new Error('Failed to load filter catalog');
-			return r.json() as Promise<AddFilterCatalog>;
-		});
+		catalogPromise = fetch(CATALOG_URL)
+			.then((r) => {
+				if (!r.ok) throw new Error('Failed to load filter catalog');
+				return r.json() as Promise<AddFilterCatalog>;
+			})
+			.catch((e) => {
+				catalogPromise = undefined; // let the next open retry
+				throw e;
+			});
 	return catalogPromise;
 };
 
-const summarizeManual = (operation: string, right: number | number[]) => {
-	if (Array.isArray(right)) return `${right[0]} – ${right[1]}`;
-	const sign =
-		{ greater: '>', egreater: '≥', less: '<', eless: '≤', equal: '=' }[
-			operation
-		] ?? '';
-	return `${sign} ${right}`.trim();
-};
+const matches = (q: string, ...texts: (string | undefined)[]) =>
+	!q || texts.some((t) => t?.toLowerCase().includes(q));
 
-const withParamPrefix = (prefix: string, text: string) =>
+const withPrefix = (prefix: string, text: string) =>
 	prefix ? `${prefix} · ${text}` : text;
+
+/** "SYML:IDX;LQ45" (scanner symbolset) -> "IDX:LQ45" (the Index chip's value). */
+const indexChipValue = (v: CatalogValue) =>
+	String(v.value).replace(/^SYML:([^;]+);/, '$1:');
+
+const itemClass =
+	'text-foreground data-[selected=true]:bg-muted data-[selected=true]:text-foreground';
+
+// ---------------------------------------------------------------------------
+// Filter bodies
+// ---------------------------------------------------------------------------
+
+function ParamSelects({
+	entry,
+	chosen,
+	onChange,
+}: {
+	entry: CatalogFilter;
+	chosen: ParamChoice;
+	onChange: (next: ParamChoice) => void;
+}) {
+	if (!entry.params?.length) return null;
+	return (
+		<div className="flex flex-wrap gap-1.5 px-1 pb-2">
+			{entry.params.map((p) => (
+				<label key={p.name} className="flex min-w-0 flex-1 basis-28 flex-col gap-0.5">
+					<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+						{p.title}
+					</span>
+					<select
+						value={chosen[p.name] ?? p.default}
+						onChange={(e) => onChange({ ...chosen, [p.name]: e.target.value })}
+						className="h-8 w-full rounded-sm border border-border bg-card px-1.5 text-xs text-foreground dark:bg-muted"
+					>
+						{p.options.map((o) => (
+							<option key={o.value} value={o.value}>
+								{o.label}
+							</option>
+						))}
+					</select>
+				</label>
+			))}
+		</div>
+	);
+}
 
 function ConditionBody({
 	entry,
@@ -58,80 +114,90 @@ function ConditionBody({
 	onAdd,
 }: {
 	entry: CatalogFilter;
-	chosen: Record<string, string>;
+	chosen: ParamChoice;
 	onAdd: (added: AddedFilter) => void;
 }) {
-	const manualOps = (entry.operations ?? []).filter((o) =>
-		MANUAL_SAFE_OPERATIONS.includes(o)
+	const manualOps = (entry.operations ?? []).filter(
+		(o) => o in MANUAL_OPERATION_LABELS
 	);
 	const [manual, setManual] = useState(!entry.presets?.length);
-	const [operator, setOperator] = useState(
-		manualOps.includes('in_range') ? 'in_range' : manualOps[0]
-	);
+	const [operator, setOperator] = useState(manualOps[0] ?? 'greater');
 	const [val1, setVal1] = useState('');
 	const [val2, setVal2] = useState('');
 
 	const prefix = paramSummary(entry, chosen);
-	const parse = (s: string) => (s.trim() === '' ? undefined : Number(s));
+	const isRange = operator === 'in_range' || operator === 'not_in_range';
+	const parse = (s: string) =>
+		s.trim() === '' || Number.isNaN(Number(s)) ? undefined : Number(s);
 	const canApply =
-		operator === 'in_range'
-			? parse(val1) !== undefined && parse(val2) !== undefined
-			: parse(val1) !== undefined;
+		parse(val1) !== undefined && (!isRange || parse(val2) !== undefined);
 
 	const applyManual = () => {
-		if (!canApply || !operator) return;
+		if (!canApply) return;
 		const a = parse(val1)!;
-		const right =
-			operator === 'in_range' ? [Math.min(a, parse(val2)!), Math.max(a, parse(val2)!)] : a;
+		const right = isRange
+			? [Math.min(a, parse(val2)!), Math.max(a, parse(val2)!)]
+			: a;
+		const text = Array.isArray(right)
+			? `${MANUAL_OPERATION_LABELS[operator]} ${right[0]} – ${right[1]}`
+			: `${MANUAL_OPERATION_LABELS[operator]} ${right}`;
 		onAdd({
 			key: entry.key,
 			label: entry.label,
-			summary: withParamPrefix(prefix, summarizeManual(operator, right)),
-			expr: { left: resolveField(entry, chosen), operation: operator, right },
+			summary: withPrefix(prefix, text),
+			operand: {
+				expression: {
+					left: resolveField(entry, chosen),
+					operation: operator,
+					right,
+				},
+			},
 		});
 	};
 
-	return !manual ? (
-		<>
-			<div className="max-h-72 overflow-y-auto">
-				{entry.presets?.map((p, i) => (
-					<button
-						key={i}
-						type="button"
-						onClick={() =>
-							onAdd({
-								key: entry.key,
-								label: entry.label,
-								summary: withParamPrefix(prefix, p.title),
-								expr: resolvePreset(entry, p, chosen),
-							})
-						}
-						className="flex w-full items-start justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-					>
-						<span>
-							<span className="block text-foreground">{p.title}</span>
+	if (!manual)
+		return (
+			<CommandList className="max-h-80 min-h-0 flex-1">
+				<CommandGroup>
+					{entry.presets?.map((p, i) => (
+						<CommandItem
+							key={i}
+							value={`${i}`}
+							onSelect={() =>
+								onAdd({
+									key: entry.key,
+									label: entry.label,
+									summary: withPrefix(prefix, p.title),
+									operand: resolvePreset(entry, p, chosen),
+								})
+							}
+							className={cn('flex-col items-start gap-0', itemClass)}
+						>
+							<span>{p.title}</span>
 							{p.description && (
-								<span className="block text-xs text-muted-foreground">
+								<span className="text-xs text-muted-foreground">
 									{p.description}
 								</span>
 							)}
-						</span>
-					</button>
-				))}
-			</div>
-			{manualOps.length > 0 && (
-				<div className="mt-1 border-t pt-1">
-					<button
-						type="button"
-						onClick={() => setManual(true)}
-						className="flex w-full items-center rounded-sm px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-					>
-						Manual setup...
-					</button>
-				</div>
-			)}
-		</>
-	) : (
+						</CommandItem>
+					))}
+				</CommandGroup>
+				{manualOps.length > 0 && (
+					<CommandGroup className="border-t">
+						<CommandItem
+							value="manual"
+							onSelect={() => setManual(true)}
+							className={itemClass}
+						>
+							<SlidersHorizontal className="size-3.5" />
+							Manual setup
+						</CommandItem>
+					</CommandGroup>
+				)}
+			</CommandList>
+		);
+
+	return (
 		<form
 			className="space-y-3 p-1"
 			onSubmit={(e) => {
@@ -143,9 +209,9 @@ function ConditionBody({
 				<button
 					type="button"
 					onClick={() => setManual(false)}
-					className="text-xs text-muted-foreground hover:text-foreground"
+					className="text-xs text-muted-foreground hover:text-foreground cursor-pointer"
 				>
-					Back to presets
+					‹ Back to presets
 				</button>
 			)}
 			<div className="grid grid-cols-3 gap-1">
@@ -155,31 +221,32 @@ function ConditionBody({
 						type="button"
 						onClick={() => setOperator(op)}
 						className={cn(
-							'rounded-sm border px-2 py-1 text-xs',
+							'rounded-sm border px-2 py-1 text-xs cursor-pointer',
 							operator === op
 								? 'border-primary bg-primary/10 text-primary'
 								: 'border-border text-muted-foreground hover:text-foreground'
 						)}
 					>
-						{MANUAL_OPERATION_LABELS[op] ?? op}
+						{MANUAL_OPERATION_LABELS[op]}
 					</button>
 				))}
 			</div>
 			<div className="flex items-center gap-2">
 				<Input
+					autoFocus
 					value={val1}
 					onChange={(e) => setVal1(e.target.value)}
-					placeholder={operator === 'in_range' ? 'Min' : 'Value'}
+					placeholder={isRange ? 'From' : 'Value'}
 					inputMode="decimal"
 					className="h-8 dark:bg-muted"
 				/>
-				{operator === 'in_range' && (
+				{isRange && (
 					<>
 						<span className="text-muted-foreground">–</span>
 						<Input
 							value={val2}
 							onChange={(e) => setVal2(e.target.value)}
-							placeholder="Max"
+							placeholder="To"
 							inputMode="decimal"
 							className="h-8 dark:bg-muted"
 						/>
@@ -199,73 +266,87 @@ function MultiSelectBody({
 	entry,
 	chosen,
 	onAdd,
+	onAddIndexes,
 }: {
 	entry: CatalogFilter;
-	chosen: Record<string, string>;
+	chosen: ParamChoice;
 	onAdd: (added: AddedFilter) => void;
+	onAddIndexes: (indexes: string[]) => void;
 }) {
-	const [selected, setSelected] = useState<string[]>([]);
-	const values = entry.values ?? [];
-	const prefix = paramSummary(entry, chosen);
+	const [picked, setPicked] = useState<string[]>([]);
+	const values = useMemo(
+		() =>
+			[...(entry.values ?? [])].sort((a, b) =>
+				entry.key === 'Index' ? 0 : a.label.localeCompare(b.label)
+			),
+		[entry]
+	);
+	const pickedValues = values.filter((v) => picked.includes(String(v.value)));
 
 	const toggle = (v: string) =>
-		setSelected((s) => (s.includes(v) ? s.filter((x) => x !== v) : [...s, v]));
+		setPicked((s) => (s.includes(v) ? s.filter((x) => x !== v) : [...s, v]));
 
 	const add = () => {
-		if (!selected.length) return;
-		const summary =
-			selected.length === 1
-				? values.find((v) => String(v.value) === selected[0])?.label ?? selected[0]
-				: `${selected.length} selected`;
+		if (!pickedValues.length) return;
+		if (entry.target === 'indexes') {
+			onAddIndexes(pickedValues.map(indexChipValue));
+			return;
+		}
+		const operand = multiSelectOperand(entry, pickedValues, chosen);
+		if (!operand) return;
 		onAdd({
 			key: entry.key,
 			label: entry.label,
-			summary: withParamPrefix(prefix, summary),
-			expr: {
-				left: resolveField(entry, chosen),
-				operation: entry.operation ?? 'in_range',
-				right: selected,
-			},
+			summary: withPrefix(
+				paramSummary(entry, chosen),
+				pickedValues.length === 1
+					? pickedValues[0].label
+					: `${pickedValues.length} selected`
+			),
+			operand,
 		});
 	};
 
 	return (
 		<>
-			<Command className="bg-card text-foreground">
-				<CommandInput placeholder={`Search ${entry.label.toLowerCase()}...`} className="h-9" />
-				<CommandList className="max-h-56">
-					<CommandEmpty>No match.</CommandEmpty>
-					<CommandGroup>
-						{values.map((v) => {
-							const key = String(v.value);
-							const on = selected.includes(key);
-							return (
-								<CommandItem
-									key={key}
-									value={v.label}
-									onSelect={() => toggle(key)}
-									className="text-foreground data-[selected=true]:bg-muted data-[selected=true]:text-foreground"
+			{values.length > 8 && (
+				<CommandInput
+					placeholder={`Search ${entry.label.toLowerCase()}...`}
+					className="h-9"
+				/>
+			)}
+			<CommandList className="max-h-64 min-h-0 flex-1">
+				<CommandEmpty>No match.</CommandEmpty>
+				<CommandGroup>
+					{values.map((v) => {
+						const key = String(v.value);
+						const on = picked.includes(key);
+						return (
+							<CommandItem
+								key={key}
+								value={`${v.label} ${key}`}
+								onSelect={() => toggle(key)}
+								className={itemClass}
+							>
+								<span
+									className={cn(
+										'flex size-4 shrink-0 items-center justify-center rounded-sm border',
+										on
+											? 'bg-primary border-primary text-primary-foreground'
+											: 'border-muted-foreground'
+									)}
 								>
-									<span
-										className={cn(
-											'flex size-4 items-center justify-center rounded-sm border',
-											on
-												? 'bg-primary border-primary text-primary-foreground'
-												: 'border-muted-foreground'
-										)}
-									>
-										{on && <Check className="size-3" />}
-									</span>
-									{v.label}
-								</CommandItem>
-							);
-						})}
-					</CommandGroup>
-				</CommandList>
-			</Command>
-			<div className="mt-1 flex justify-end border-t pt-2">
-				<Button size="sm" disabled={!selected.length} onClick={add}>
-					Add filter{selected.length ? ` (${selected.length})` : ''}
+									{on && <Check className="size-3" />}
+								</span>
+								{v.label}
+							</CommandItem>
+						);
+					})}
+				</CommandGroup>
+			</CommandList>
+			<div className="mt-1 flex shrink-0 justify-end border-t pt-2">
+				<Button size="sm" disabled={!pickedValues.length} onClick={add}>
+					Add filter{pickedValues.length ? ` (${pickedValues.length})` : ''}
 				</Button>
 			</div>
 		</>
@@ -280,106 +361,93 @@ function OptionListBody({
 	onAdd: (added: AddedFilter) => void;
 }) {
 	return (
-		<div className="max-h-72 overflow-y-auto">
-			{entry.options?.map((o, i) => (
-				<button
-					key={i}
-					type="button"
-					onClick={() =>
-						onAdd({
-							key: entry.key,
-							label: entry.label,
-							summary: o.label,
-							expr: o.filter[0],
-						})
-					}
-					className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-				>
-					{o.label}
-				</button>
-			))}
-		</div>
+		<CommandList className="max-h-80 min-h-0 flex-1">
+			<CommandGroup>
+				{entry.options?.map((o, i) => (
+					<CommandItem
+						key={i}
+						value={`${i}`}
+						onSelect={() =>
+							onAdd({
+								key: entry.key,
+								label: entry.label,
+								summary: o.label,
+								operand: o.operand,
+							})
+						}
+						className={itemClass}
+					>
+						{o.label}
+					</CommandItem>
+				))}
+			</CommandGroup>
+		</CommandList>
 	);
 }
 
-function ConfigurePanel({
+function FilterPanel({
 	entry,
 	onAdd,
-	onBack,
+	onAddIndexes,
 }: {
 	entry: CatalogFilter;
 	onAdd: (added: AddedFilter) => void;
-	onBack: () => void;
+	onAddIndexes: (indexes: string[]) => void;
 }) {
-	const [chosen, setChosen] = useState<Record<string, string>>(
-		Object.fromEntries((entry.params ?? []).map((p) => [p.name, p.default]))
-	);
-
+	const [chosen, setChosen] = useState<ParamChoice>(() => defaultChoice(entry));
 	return (
-		<div className="space-y-2">
-			<div className="flex items-center gap-1">
-				<button
-					type="button"
-					onClick={onBack}
-					className="flex items-center gap-1 rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-					aria-label="Back to filter list"
-				>
-					<ChevronLeft className="size-4" />
-				</button>
-				<div>
-					<p className="text-sm font-medium leading-tight">{entry.label}</p>
-					{entry.note && (
-						<p className="text-xs text-muted-foreground">{entry.note}</p>
-					)}
-					{entry.thinOnIdx && (
-						<p className="text-xs text-amber-500">Limited coverage on IDX</p>
-					)}
-				</div>
-			</div>
-
-			{entry.params?.map((p) => (
-				<select
-					key={p.name}
-					value={chosen[p.name] ?? p.default}
-					onChange={(e) =>
-						setChosen((c) => ({ ...c, [p.name]: e.target.value }))
-					}
-					className="w-full rounded-sm border border-border bg-transparent px-2 py-1.5 text-sm dark:bg-muted"
-				>
-					{p.options.map((o) => (
-						<option key={o.value} value={o.value}>
-							{p.title}: {o.label}
-						</option>
-					))}
-				</select>
-			))}
-
+		<Command className="min-h-0 flex-1 bg-card text-foreground">
+			{entry.thinOnIdx && (
+				<p className="px-1 pb-2 text-xs text-amber-600 dark:text-amber-500">
+					Limited data on IDX ({entry.idxCoveragePct ?? 0}% of stocks)
+				</p>
+			)}
+			<ParamSelects entry={entry} chosen={chosen} onChange={setChosen} />
 			{entry.control === 'condition' && (
-				<ConditionBody entry={entry} chosen={chosen} onAdd={onAdd} />
+				<ConditionBody
+					// a new param choice keeps the open preset list, so no key here
+					entry={entry}
+					chosen={chosen}
+					onAdd={onAdd}
+				/>
 			)}
 			{entry.control === 'multi_select' && (
-				<MultiSelectBody entry={entry} chosen={chosen} onAdd={onAdd} />
+				<MultiSelectBody
+					entry={entry}
+					chosen={chosen}
+					onAdd={onAdd}
+					onAddIndexes={onAddIndexes}
+				/>
 			)}
 			{(entry.control === 'date' ||
 				entry.control === 'boolean' ||
 				entry.control === 'single_select') && (
 				<OptionListBody entry={entry} onAdd={onAdd} />
 			)}
-		</div>
+		</Command>
 	);
 }
+
+// ---------------------------------------------------------------------------
+// Menu: categories -> filters -> filter panel, like TradingView's "+"
+// ---------------------------------------------------------------------------
 
 export function AddFilterMenu({
 	added,
 	onAdd,
+	onAddIndexes,
 }: {
 	added: Record<string, AddedFilter> | undefined;
 	onAdd: (next: AddedFilter) => void;
+	/** Index picks go to the Index chip (a symbolset, not a filter2 expression). */
+	onAddIndexes: (indexes: string[]) => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const [catalog, setCatalog] = useState<AddFilterCatalog>();
 	const [loadError, setLoadError] = useState(false);
+	const [categoryId, setCategoryId] = useState<string>();
 	const [selected, setSelected] = useState<CatalogFilter>();
+	const [query, setQuery] = useState('');
 
 	useEffect(() => {
 		if (!open || catalog || loadError) return;
@@ -388,18 +456,64 @@ export function AddFilterMenu({
 			.catch(() => setLoadError(true));
 	}, [open, catalog, loadError]);
 
-	const handleAdd = (next: AddedFilter) => {
-		onAdd(next);
-		setOpen(false);
+	const reset = () => {
+		setCategoryId(undefined);
 		setSelected(undefined);
+		setQuery('');
 	};
+
+	const close = () => {
+		setOpen(false);
+		reset();
+	};
+
+	const category = catalog?.categories.find((c) => c.id === categoryId);
+	const q = query.trim().toLowerCase();
+
+	/** Filters to list: one category's, or every category's while searching. */
+	const groups = useMemo(() => {
+		if (!catalog) return [];
+		const pick = (c: CatalogCategory) => ({
+			id: c.id,
+			heading: c.category,
+			filters: c.filters.filter((f) => matches(q, f.label, f.key)),
+		});
+		if (category) return [pick(category)];
+		if (!q) return [];
+		return catalog.categories.map(pick).filter((g) => g.filters.length);
+	}, [catalog, category, q]);
+
+	const header = selected ? (
+		<button
+			type="button"
+			onClick={() => setSelected(undefined)}
+			className="mb-1 flex w-full items-center gap-1.5 rounded-sm px-1 py-1.5 text-left text-sm font-semibold hover:bg-muted cursor-pointer"
+		>
+			<ChevronLeft className="size-4 shrink-0" />
+			<span className="truncate">{selected.label}</span>
+		</button>
+	) : category ? (
+		<button
+			type="button"
+			onClick={() => {
+				setCategoryId(undefined);
+				setQuery('');
+			}}
+			className="mb-1 flex w-full items-center gap-1.5 rounded-sm px-1 py-1.5 text-sm font-semibold hover:bg-muted cursor-pointer"
+		>
+			<ChevronLeft className="size-4" />
+			{category.category}
+		</button>
+	) : (
+		<p className="mb-1 px-1 py-1.5 text-sm font-semibold">Filters</p>
+	);
 
 	return (
 		<Popover
 			open={open}
 			onOpenChange={(next) => {
 				setOpen(next);
-				if (!next) setSelected(undefined);
+				if (!next) reset();
 			}}
 		>
 			<PopoverTrigger asChild>
@@ -413,13 +527,22 @@ export function AddFilterMenu({
 				</Button>
 			</PopoverTrigger>
 			<PopoverContent
-				className="flex w-80 flex-col overflow-hidden p-2 bg-card text-foreground border-border"
+				className="flex w-96 flex-col overflow-hidden p-2 bg-card text-foreground border-border"
 				align="start"
 			>
 				{!catalog ? (
 					<div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
 						{loadError ? (
-							'Could not load the filter catalog.'
+							<>
+								Could not load the filter catalog.
+								<Button
+									size="sm"
+									variant="ghost"
+									onClick={() => setLoadError(false)}
+								>
+									Retry
+								</Button>
+							</>
 						) : (
 							<>
 								<Loader2 className="size-4 animate-spin" />
@@ -427,41 +550,95 @@ export function AddFilterMenu({
 							</>
 						)}
 					</div>
-				) : selected ? (
-					<ConfigurePanel
-						entry={selected}
-						onAdd={handleAdd}
-						onBack={() => setSelected(undefined)}
-					/>
 				) : (
-					<Command className="min-h-0 flex-1 bg-card text-foreground">
-						<CommandInput placeholder="Search filters..." className="h-9" />
-						<CommandList className="max-h-96 min-h-0 flex-1">
-							<CommandEmpty>No match.</CommandEmpty>
-							{catalog.categories.map((cat) => (
-								<CommandGroup key={cat.category} heading={cat.category}>
-									{cat.filters.map((f) => (
-										<CommandItem
-											key={f.key}
-											value={f.label}
-											onSelect={() => setSelected(f)}
-											className="text-foreground data-[selected=true]:bg-muted data-[selected=true]:text-foreground"
-										>
-											<span className="flex-1">{f.label}</span>
-											{added?.[f.key] && (
-												<Check className="size-3.5 text-primary" />
-											)}
-											{f.thinOnIdx && (
-												<span className="text-xs text-muted-foreground">
-													Limited data
-												</span>
-											)}
-										</CommandItem>
+					<>
+						{header}
+						{selected ? (
+							<FilterPanel
+								key={selected.key}
+								entry={selected}
+								onAdd={(next) => {
+									onAdd(next);
+									close();
+								}}
+								onAddIndexes={(indexes) => {
+									onAddIndexes(indexes);
+									close();
+								}}
+							/>
+						) : (
+							// filtering is done here: cmdk would score all 261 filters
+							<Command
+								shouldFilter={false}
+								className="min-h-0 flex-1 bg-card text-foreground"
+							>
+								<CommandInput
+									value={query}
+									onValueChange={setQuery}
+									placeholder={
+										category
+											? `Search ${category.category.toLowerCase()}...`
+											: 'Search filters...'
+									}
+									className="h-9"
+								/>
+								<CommandList className="max-h-96 min-h-0 flex-1">
+									{(category || q) && <CommandEmpty>No match.</CommandEmpty>}
+									{!category && !q && (
+										<CommandGroup>
+											{catalog.categories.map((c) => {
+												const Icon = categoryIcon(c.id);
+												const active = c.filters.filter((f) => added?.[f.key]).length;
+												return (
+													<CommandItem
+														key={c.id}
+														value={c.id}
+														onSelect={() => setCategoryId(c.id)}
+														className={cn('py-2', itemClass)}
+													>
+														<Icon className="size-4 text-foreground" />
+														<span className="flex-1">{c.category}</span>
+														{active > 0 && (
+															<span className="rounded-full bg-primary px-1.5 text-[10px] text-primary-foreground">
+																{active}
+															</span>
+														)}
+														<span className="w-6 text-right text-xs text-muted-foreground">
+															{c.filters.length}
+														</span>
+														<ChevronRight className="size-3.5 text-muted-foreground" />
+													</CommandItem>
+												);
+											})}
+										</CommandGroup>
+									)}
+									{groups.map((g) => (
+										<CommandGroup key={g.id} heading={category ? undefined : g.heading}>
+											{g.filters.map((f) => (
+												<CommandItem
+													key={f.key}
+													value={f.key}
+													onSelect={() => setSelected(f)}
+													className={itemClass}
+												>
+													<span className="flex-1">{f.label}</span>
+													{f.thinOnIdx && (
+														<span className="text-[10px] text-muted-foreground">
+															Limited data
+														</span>
+													)}
+													{added?.[f.key] && (
+														<Check className="size-3.5 text-primary" />
+													)}
+													<ChevronRight className="size-3.5 text-muted-foreground" />
+												</CommandItem>
+											))}
+										</CommandGroup>
 									))}
-								</CommandGroup>
-							))}
-						</CommandList>
-					</Command>
+								</CommandList>
+							</Command>
+						)}
+					</>
 				)}
 			</PopoverContent>
 		</Popover>

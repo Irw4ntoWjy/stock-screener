@@ -58,7 +58,7 @@ const buildFilter = (filters: ScreenerFilters): ScanGroup => {
 		operands.push(leaf(field, condition.operation, condition.right));
 
 	for (const added of Object.values(filters.custom ?? {}))
-		operands.push(leaf(added.expr.left, added.expr.operation, added.expr.right));
+		if (added.operand) operands.push(added.operand);
 
 	return { operator: 'and', operands };
 };

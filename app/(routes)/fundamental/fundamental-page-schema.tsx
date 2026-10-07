@@ -39,10 +39,11 @@ export type ConditionValue = {
 
 /** A filter added through the "+ Add filter" catalog picker; see add-filter-catalog.ts. */
 export type AddedFilter = {
-	key: string; // catalog filter key, e.g. "RSI"
-	label: string; // catalog filter label, e.g. "Relative Strength Index"
+	key: string; // TradingView filter id, e.g. "RelativeStrengthIndex"
+	label: string; // e.g. "Relative strength index"
 	summary: string; // chip value text, e.g. "1 hour · Above 70"
-	expr: { left: string; operation: string; right: unknown };
+	/** What goes into `filter2`: one expression or a group (e.g. Symbol type). */
+	operand: ScanOperand;
 };
 
 /** Everything the user can filter on. Serialisable so it can cross the server-action boundary. */

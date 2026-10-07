@@ -15,24 +15,9 @@ import {
 	PopoverTrigger,
 } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
-import {
-	Activity,
-	BadgePercent,
-	Calculator,
-	ChartCandlestick,
-	ChartColumn,
-	ChartPie,
-	Check,
-	ChevronLeft,
-	ChevronRight,
-	HandCoins,
-	Info,
-	Loader2,
-	LucideIcon,
-	Plus,
-	TrendingUp,
-} from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Loader2, Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { categoryIcon } from '../category-icons';
 import {
 	CATALOG,
 	CATALOG_FIELDS,
@@ -48,18 +33,6 @@ import { TvCategory, TvColumn } from '../tradingview-columns';
 
 // 1,000+ raw fields: only the best matches render, and only once searched.
 const RAW_RESULT_LIMIT = 50;
-
-const CATEGORY_ICONS: Record<string, LucideIcon> = {
-	securityInfo: Info,
-	marketData: ChartCandlestick,
-	technicals: Activity,
-	financials: ChartColumn,
-	valuation: ChartPie,
-	growth: TrendingUp,
-	marginsAndRatios: BadgePercent,
-	dividends: HandCoins,
-	custom: Calculator,
-};
 
 let fieldsPromise: Promise<TradingViewField[]> | undefined;
 const loadFields = () => {
@@ -283,7 +256,7 @@ export function AddColumnMenu({
 						{!category && !q && (
 							<CommandGroup>
 								{CATALOG.map((c) => {
-									const Icon = CATEGORY_ICONS[c.id] ?? Info;
+									const Icon = categoryIcon(c.id);
 									const columns = catalogColumns(c);
 									const added = columns.filter((col) =>
 										col.variants.some((v) =>

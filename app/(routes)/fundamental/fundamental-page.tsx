@@ -511,7 +511,15 @@ export default function FundamentalPage({
 						onRemove={() => removeCustomFilter(added.key)}
 					/>
 				))}
-				<AddFilterMenu added={filters.custom} onAdd={addCustomFilter} />
+				<AddFilterMenu
+					added={filters.custom}
+					onAdd={addCustomFilter}
+					onAddIndexes={(indexes) =>
+						updateFilters({
+							indexes: [...new Set([...(filters.indexes ?? []), ...indexes])],
+						})
+					}
+				/>
 				{activeFilterCount > 0 && (
 					<Button
 						variant="ghost"

@@ -831,6 +831,9 @@ export const SESSION_FIELDS = [
 	'premarket_change',
 	'premarket_gap',
 	'premarket_volume',
+	// false for every symbol until it trades in the new session, which would
+	// flag the whole table "Inactive" before the open
+	'active_symbol',
 ];
 
 export const DEFAULT_TAB: ScreenerTabId = 'custom';
