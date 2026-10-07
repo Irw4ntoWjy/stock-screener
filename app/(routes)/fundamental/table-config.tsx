@@ -1,6 +1,5 @@
 'use client';
 
-import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
 	Column,
@@ -10,8 +9,6 @@ import {
 import {
 	ArrowDown,
 	ArrowUp,
-	Building,
-	ChartLine,
 	ChevronDown,
 	ChevronsDown,
 	ChevronsUp,
@@ -19,8 +16,8 @@ import {
 	Minus,
 	X,
 } from 'lucide-react';
-import Link from 'next/link';
 import { AddColumnMenu } from './component/add-column-menu';
+import { RowActionsMenu } from './component/row-actions-menu';
 import { SymbolCell } from './component/symbol-cell';
 import {
 	abbreviate,
@@ -367,31 +364,8 @@ export const getFundamentalColumns = (
 			enableSorting: false,
 			header: AddColumnHeader,
 			cell: ({ row }) => (
-				<div className="flex justify-end gap-1">
-					<Button
-						asChild
-						size="sm"
-						variant="ghost"
-						title="Company profile"
-						className="size-7 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-					>
-						<Link
-							href={`/company-profile/${row.original.ticker}?from=fundamental`}
-						>
-							<Building className="size-4" />
-						</Link>
-					</Button>
-					<Button
-						asChild
-						size="sm"
-						variant="ghost"
-						title="Chart"
-						className="size-7 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-					>
-						<Link href={`/chart/${row.original.ticker}`}>
-							<ChartLine className="size-4" />
-						</Link>
-					</Button>
+				<div className="flex justify-end">
+					<RowActionsMenu ticker={row.original.ticker} />
 				</div>
 			),
 			meta: { stickyRight: true },
