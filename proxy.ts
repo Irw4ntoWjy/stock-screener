@@ -17,8 +17,8 @@ export function proxy(req: NextRequest) {
 		return NextResponse.redirect(homeUrl);
 	}
 
-	// redirect when user access root
-	if (token && isRoot) {
+	// the root has no page of its own: always send it to the screener
+	if (isRoot) {
 		const homeUrl = new URL('/technical', req.url);
 		return NextResponse.redirect(homeUrl);
 	}
