@@ -3,6 +3,7 @@
 import { cn } from '@/lib/utils';
 import {
 	ColumnDef,
+	ColumnOrderState,
 	ColumnSizingState,
 	Header,
 	RowData,
@@ -47,6 +48,8 @@ interface ScreenerTableProps {
 	pagination: PaginationState;
 	onPaginationChange: OnChangeFn<PaginationState>;
 	meta?: TableMeta<ScreenerRow>;
+	/** Column order is remembered per key (the screener tab). */
+	orderKey: string;
 }
 
 // Per-viewer convenience: column widths the user dragged, keyed by column id.
@@ -55,12 +58,25 @@ const WIDTHS_KEY = 'fundamental.column-widths.v1';
 const MIN_WIDTH = 48;
 const CELL_PADDING = 24; // px-3 on both sides
 
-const readWidths = (): ColumnSizingState => {
+// Same for the column order the user dragged, per tab.
+const ORDER_KEY = 'fundamental.column-order.v1';
+/** Pinned to the right edge; left out of saved orders so new columns land before it. */
+const ACTION_COLUMN = 'action';
+
+const readStored = <T extends object>(key: string): T => {
 	try {
-		const parsed = JSON.parse(localStorage.getItem(WIDTHS_KEY) ?? '{}');
-		return parsed && typeof parsed === 'object' ? parsed : {};
+		const parsed = JSON.parse(localStorage.getItem(key) ?? '{}');
+		return parsed && typeof parsed === 'object' ? parsed : ({} as T);
 	} catch {
-		return {};
+		return {} as T;
+	}
+};
+
+const writeStored = (key: string, value: unknown) => {
+	try {
+		localStorage.setItem(key, JSON.stringify(value));
+	} catch {
+		// storage unavailable: the layout still applies for this visit
 	}
 };
 
@@ -72,33 +88,44 @@ export function useScreenerTable({
 	pagination,
 	onPaginationChange,
 	meta,
+	orderKey,
 }: ScreenerTableProps) {
 	const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({});
+	const [orders, setOrders] = useState<Record<string, ColumnOrderState>>({});
 	const [restored, setRestored] = useState(false);
 
 	// restored after mount: localStorage is not there during SSR
 	useEffect(() => {
-		setColumnSizing(readWidths());
+		setColumnSizing(readStored<ColumnSizingState>(WIDTHS_KEY));
+		setOrders(readStored<Record<string, ColumnOrderState>>(ORDER_KEY));
 		setRestored(true);
 	}, []);
 
 	useEffect(() => {
-		if (!restored) return;
-		try {
-			localStorage.setItem(WIDTHS_KEY, JSON.stringify(columnSizing));
-		} catch {
-			// storage unavailable: the widths still apply for this visit
-		}
+		if (restored) writeStored(WIDTHS_KEY, columnSizing);
 	}, [columnSizing, restored]);
+
+	useEffect(() => {
+		if (restored) writeStored(ORDER_KEY, orders);
+	}, [orders, restored]);
+
+	const columnOrder = orders[orderKey] ?? [];
+	const onColumnOrderChange: OnChangeFn<ColumnOrderState> = (updater) =>
+		setOrders((all) => {
+			const next =
+				typeof updater === 'function' ? updater(all[orderKey] ?? []) : updater;
+			return { ...all, [orderKey]: next.filter((id) => id !== ACTION_COLUMN) };
+		});
 
 	return useReactTable({
 		data,
 		columns,
-		state: { sorting, pagination, columnSizing },
+		state: { sorting, pagination, columnSizing, columnOrder },
 		meta,
 		onSortingChange,
 		onPaginationChange,
 		onColumnSizingChange: setColumnSizing,
+		onColumnOrderChange,
 		enableColumnResizing: true,
 		columnResizeMode: 'onChange',
 		getCoreRowModel: getCoreRowModel(),
@@ -108,6 +135,9 @@ export function useScreenerTable({
 		autoResetPageIndex: false,
 	});
 }
+
+/** Set while a resize edge is held, so the header under it does not start a column drag. */
+let resizing = false;
 
 /**
  * Drag handle on a header's right edge, like a spreadsheet. The drag starts
@@ -124,6 +154,7 @@ function ResizeHandle({ header }: { header: Header<ScreenerRow, unknown> }) {
 		e.stopPropagation();
 		const th = e.currentTarget.parentElement;
 		if (!th) return;
+		resizing = true;
 		const startX = e.clientX;
 		const startWidth = th.getBoundingClientRect().width;
 		const move = (ev: PointerEvent) =>
@@ -135,6 +166,7 @@ function ResizeHandle({ header }: { header: Header<ScreenerRow, unknown> }) {
 				),
 			}));
 		const up = () => {
+			resizing = false;
 			window.removeEventListener('pointermove', move);
 			window.removeEventListener('pointerup', up);
 			document.body.style.removeProperty('cursor');
@@ -160,6 +192,7 @@ function ResizeHandle({ header }: { header: Header<ScreenerRow, unknown> }) {
 			aria-label={`Resize ${column.id}`}
 			title="Drag to resize · double-click to fit"
 			onPointerDown={onPointerDown}
+			draggable={false}
 			onDoubleClick={(e) => {
 				e.stopPropagation();
 				reset();
@@ -205,6 +238,27 @@ export function ScreenerTable({
 	const colCount = table.getVisibleLeafColumns().length;
 	const widths = table.getState().columnSizing;
 
+	// Column drag and drop: the pinned Symbol and action columns stay put.
+	const [dragId, setDragId] = useState<string>();
+	const [drop, setDrop] = useState<{ id: string; after: boolean }>();
+	const movable = (meta?: { sticky?: boolean; stickyRight?: boolean }) =>
+		!meta?.sticky && !meta?.stickyRight;
+
+	const moveColumn = (from: string, to: string, after: boolean) => {
+		if (from === to) return;
+		const ids = table.getVisibleLeafColumns().map((c) => c.id);
+		const rest = ids.filter((id) => id !== from);
+		const at = rest.indexOf(to);
+		if (at < 0) return;
+		rest.splice(after ? at + 1 : at, 0, from);
+		table.setColumnOrder(rest);
+	};
+
+	const endDrag = () => {
+		setDragId(undefined);
+		setDrop(undefined);
+	};
+
 	return (
 		<table className="w-full caption-bottom text-sm border-separate border-spacing-0">
 			<thead className="sticky top-0 z-20">
@@ -212,11 +266,52 @@ export function ScreenerTable({
 					<tr key={group.id}>
 						{group.headers.map((header) => {
 							const meta = header.column.columnDef.meta;
+							const id = header.column.id;
+							const canMove = movable(meta);
+							const dropHere = drop?.id === id && dragId !== id;
 							return (
 								<th
 									key={header.id}
+									draggable={canMove}
+									title={canMove ? 'Drag to move this column' : undefined}
+									onDragStart={(e) => {
+										if (!canMove || resizing) {
+											e.preventDefault();
+											return;
+										}
+										setDragId(id);
+										e.dataTransfer.effectAllowed = 'move';
+										e.dataTransfer.setData('text/plain', id);
+									}}
+									onDragOver={(e) => {
+										if (!dragId || !canMove) return;
+										e.preventDefault();
+										e.dataTransfer.dropEffect = 'move';
+										const box = e.currentTarget.getBoundingClientRect();
+										const after = e.clientX > box.left + box.width / 2;
+										if (drop?.id !== id || drop.after !== after)
+											setDrop({ id, after });
+									}}
+									onDragLeave={(e) => {
+										// leaving for a child element is not leaving the header
+										if (!e.currentTarget.contains(e.relatedTarget as Node))
+											setDrop((d) => (d?.id === id ? undefined : d));
+									}}
+									onDrop={(e) => {
+										e.preventDefault();
+										if (dragId && drop) moveColumn(dragId, id, drop.after);
+										endDrag();
+									}}
+									onDragEnd={endDrag}
 									className={cn(
 										'relative h-11 px-3 whitespace-nowrap align-middle border-b bg-muted',
+										canMove && 'cursor-grab active:cursor-grabbing',
+										dragId === id && 'opacity-40',
+										// where the dragged column will land
+										dropHere &&
+											(drop.after
+												? 'shadow-[inset_-3px_0_0_0_var(--primary)]'
+												: 'shadow-[inset_3px_0_0_0_var(--primary)]'),
 										meta?.alignRight
 											? 'text-right'
 											: 'text-left',

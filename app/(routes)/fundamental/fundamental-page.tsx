@@ -351,6 +351,7 @@ export default function FundamentalPage({
 		},
 		pagination,
 		onPaginationChange: setPagination,
+		orderKey: tab,
 	});
 
 	const handleExport = () => {
