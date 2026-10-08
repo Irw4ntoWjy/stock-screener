@@ -65,8 +65,10 @@ export function SymbolCell({ row }: { row: ScreenerRow }) {
 			</Link>
 			<span
 				className={cn(
-					// phones keep the pinned column narrow: code + logo only
-					'hidden sm:block truncate max-w-[160px] md:max-w-[280px] text-sm',
+					// phones keep the pinned column narrow: code + logo only. No width
+					// cap: the full name shows, and dragging the column narrower
+					// truncates it with "…"
+					'hidden sm:block min-w-0 truncate text-sm',
 					inactive ? 'text-red-600' : 'text-foreground'
 				)}
 				title={description}
