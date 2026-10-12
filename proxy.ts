@@ -6,11 +6,10 @@ export function proxy(req: NextRequest) {
 	const isRoot = req.nextUrl.pathname === '/';
 
 	// redirect when user not login
-	// disabled temporarily to allow direct access without logging in
-	// if (!token && !isLoginPage) {
-	// 	const loginUrl = new URL('/login', req.url);
-	// 	return NextResponse.redirect(loginUrl);
-	// }
+	if (!token && !isLoginPage) {
+		const loginUrl = new URL('/login', req.url);
+		return NextResponse.redirect(loginUrl);
+	}
 
 	if (token && isLoginPage) {
 		const homeUrl = new URL('/technical', req.url);
