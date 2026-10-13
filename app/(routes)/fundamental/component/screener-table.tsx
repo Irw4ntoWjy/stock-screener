@@ -36,6 +36,9 @@ declare module '@tanstack/react-table' {
 			tabFields: Set<string>;
 			addedFields: Set<string>;
 			onToggle: (column: ScreenerColumn) => void;
+			/** How many of the tab's own columns the user closed. */
+			hiddenCount?: number;
+			onRestoreDefaults?: () => void;
 		};
 	}
 }

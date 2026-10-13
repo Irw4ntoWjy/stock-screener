@@ -32,11 +32,8 @@ import {
 	ratingLabel,
 	ratingRank,
 } from './format';
-import {
-	ScreenerRow,
-	ScreenerTabId,
-} from './fundamental-page-schema';
-import { ScreenerColumn, getTab } from './screener-config';
+import { ScreenerRow } from './fundamental-page-schema';
+import { ScreenerColumn } from './screener-config';
 
 const TEXT_FORMATS = new Set([
 	'text',
@@ -335,13 +332,13 @@ function AddColumnHeader({
 }
 
 export const getFundamentalColumns = (
-	tabId: ScreenerTabId,
 	totalCount: number,
+	/** The tab's own columns minus the ones the user closed. */
+	tabColumns: ScreenerColumn[],
 	added: ScreenerColumn[],
-	onRemoveAdded: (col: ScreenerColumn) => void
+	/** Every value column can be closed: tab columns hide, added ones go. */
+	onRemove: (col: ScreenerColumn) => void
 ): ColumnDef<ScreenerRow>[] => {
-	const tabColumns = getTab(tabId).columns;
-
 	return [
 		{
 			id: 'symbol',
@@ -357,8 +354,8 @@ export const getFundamentalColumns = (
 			cell: ({ row }) => <SymbolCell row={row.original} />,
 			meta: { sticky: true },
 		},
-		...tabColumns.map((col) => valueColumn(col)),
-		...added.map((col) => valueColumn(col, onRemoveAdded)),
+		...tabColumns.map((col) => valueColumn(col, onRemove)),
+		...added.map((col) => valueColumn(col, onRemove)),
 		{
 			id: 'action',
 			enableSorting: false,

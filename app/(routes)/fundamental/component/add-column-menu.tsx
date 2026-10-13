@@ -55,11 +55,16 @@ export function AddColumnMenu({
 	tabFields,
 	addedFields,
 	onToggle,
+	hiddenCount = 0,
+	onRestoreDefaults,
 }: {
 	/** Fields the tab shows on its own; they cannot be added twice. */
 	tabFields: Set<string>;
 	addedFields: Set<string>;
 	onToggle: (column: ScreenerColumn) => void;
+	/** How many of the tab's own columns are closed. */
+	hiddenCount?: number;
+	onRestoreDefaults?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const [query, setQuery] = useState('');
@@ -310,11 +315,23 @@ export function AddColumnMenu({
 						)}
 					</CommandList>
 				</Command>
-				<p className="shrink-0 border-t px-2 pt-2 mt-1 text-[11px] text-muted-foreground">
-					{category
-						? 'Pick a period or length chip to add that variant.'
-						: 'Search here to look through every category and every TradingView field.'}
-				</p>
+				<div className="flex shrink-0 items-start justify-between gap-2 border-t px-2 pt-2 mt-1 text-[11px] text-muted-foreground">
+					<p>
+						{category
+							? 'Pick a period or length chip to add that variant.'
+							: 'Search here to look through every category and every TradingView field.'}
+					</p>
+					{hiddenCount > 0 && onRestoreDefaults && (
+						<button
+							type="button"
+							onClick={onRestoreDefaults}
+							title="Bring back the columns you closed in this tab"
+							className="shrink-0 font-medium text-primary hover:underline cursor-pointer"
+						>
+							Restore default columns ({hiddenCount})
+						</button>
+					)}
+				</div>
 			</PopoverContent>
 		</Popover>
 	);

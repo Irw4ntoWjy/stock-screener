@@ -104,13 +104,40 @@ const saveAddedColumns = (value: AddedColumns) => {
 	}
 };
 
+/** The tab's own columns the user closed, per tab (field names). */
+type HiddenColumns = Partial<Record<ScreenerTabId, string[]>>;
+const NO_FIELDS: string[] = [];
+
+const HIDDEN_COLUMNS_KEY = 'fundamental.hidden-columns.v1';
+const readHiddenColumns = (): HiddenColumns => {
+	try {
+		const raw = localStorage.getItem(HIDDEN_COLUMNS_KEY);
+		const parsed = raw ? JSON.parse(raw) : {};
+		return parsed && typeof parsed === 'object' ? parsed : {};
+	} catch {
+		return {};
+	}
+};
+const saveHiddenColumns = (value: HiddenColumns) => {
+	try {
+		localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify(value));
+	} catch {
+		// storage unavailable: the columns stay closed for this visit
+	}
+};
+
+/** A tab's own columns minus the ones the user closed. */
+const visibleTabColumns = (tab: ScreenerTabId, hidden: string[] = []) =>
+	getTab(tab).columns.filter((c) => !hidden.includes(c.field));
+
 const hasColumn = (
 	tab: ScreenerTabId,
 	id: string,
-	added: ScreenerColumn[] = []
+	added: ScreenerColumn[] = [],
+	hidden: string[] = []
 ) =>
 	id === 'symbol' ||
-	getTab(tab).columns.some((c) => c.field === id) ||
+	visibleTabColumns(tab, hidden).some((c) => c.field === id) ||
 	added.some((c) => c.field === id);
 
 const exportValue = (col: ScreenerColumn, row: ScreenerRow) => {
@@ -157,6 +184,9 @@ export default function FundamentalPage({
 	const [addedColumns, setAddedColumns] = useState<AddedColumns>({});
 	const addedRef = useRef(addedColumns);
 	const tabAdded = addedColumns[tab] ?? NO_COLUMNS;
+	const [hiddenColumns, setHiddenColumns] = useState<HiddenColumns>({});
+	const hiddenRef = useRef(hiddenColumns);
+	const tabHidden = hiddenColumns[tab] ?? NO_FIELDS;
 
 	const load = (
 		nextTab: ScreenerTabId,
@@ -231,7 +261,14 @@ export default function FundamentalPage({
 		tabRef.current = next;
 		// keep the sort if the new tab still has that column
 		setSorting((s) =>
-			s.filter((x) => hasColumn(next, x.id, addedRef.current[next]))
+			s.filter((x) =>
+				hasColumn(
+					next,
+					x.id,
+					addedRef.current[next],
+					hiddenRef.current[next]
+				)
+			)
 		);
 		load(next, filtersRef.current);
 	};
@@ -288,6 +325,9 @@ export default function FundamentalPage({
 		const stored = readAddedColumns();
 		addedRef.current = stored;
 		setAddedColumns(stored);
+		const hidden = readHiddenColumns();
+		hiddenRef.current = hidden;
+		setHiddenColumns(hidden);
 		if (stored[tabRef.current]?.length)
 			load(tabRef.current, filtersRef.current, { resetPage: false });
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -310,17 +350,46 @@ export default function FundamentalPage({
 		}
 	};
 
+	const setTabHidden = (fields: string[]) => {
+		const next = { ...hiddenRef.current, [tabRef.current]: fields };
+		hiddenRef.current = next;
+		setHiddenColumns(next);
+		saveHiddenColumns(next);
+	};
+
+	/** The "×" on any column: a tab column is hidden, an added one removed. */
+	const removeColumn = (col: ScreenerColumn) => {
+		const own = getTab(tabRef.current).columns.some((c) => c.field === col.field);
+		if (!own) return toggleAddedColumn(col);
+		const hidden = hiddenRef.current[tabRef.current] ?? [];
+		if (!hidden.includes(col.field)) setTabHidden([...hidden, col.field]);
+		setSorting((s) => s.filter((x) => x.id !== col.field));
+	};
+
+	/** The "+" menu: a closed tab column comes back, anything else toggles. */
+	const toggleColumn = (col: ScreenerColumn) => {
+		const hidden = hiddenRef.current[tabRef.current] ?? [];
+		if (hidden.includes(col.field))
+			return setTabHidden(hidden.filter((f) => f !== col.field));
+		toggleAddedColumn(col);
+	};
+
+	const visibleColumns = useMemo(
+		() => visibleTabColumns(tab, tabHidden),
+		[tab, tabHidden]
+	);
+
 	const columns = useMemo(
 		() =>
 			getFundamentalColumns(
-				tab,
 				result.totalCount,
+				visibleColumns,
 				tabAdded,
-				toggleAddedColumn
+				removeColumn
 			),
-		// toggleAddedColumn only reads refs, so a stale copy behaves the same
+		// removeColumn only reads refs, so a stale copy behaves the same
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[tab, result.totalCount, tabAdded]
+		[result.totalCount, visibleColumns, tabAdded]
 	);
 
 	const rows = useMemo(
@@ -331,13 +400,16 @@ export default function FundamentalPage({
 	const meta = useMemo(
 		() => ({
 			addColumn: {
-				tabFields: new Set(getTab(tab).columns.map((c) => c.field)),
+				// closed tab columns are not "in tab": the menu can bring them back
+				tabFields: new Set(visibleColumns.map((c) => c.field)),
 				addedFields: new Set(tabAdded.map((c) => c.field)),
-				onToggle: toggleAddedColumn,
+				onToggle: toggleColumn,
+				hiddenCount: tabHidden.length,
+				onRestoreDefaults: () => setTabHidden([]),
 			},
 		}),
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[tab, tabAdded]
+		[visibleColumns, tabAdded, tabHidden]
 	);
 
 	const table = useScreenerTable({
@@ -366,7 +438,7 @@ export default function FundamentalPage({
 					width: 38,
 					value: (r) => String(r.description ?? ''),
 				},
-				...[...current.columns, ...tabAdded].map((col) => ({
+				...[...visibleColumns, ...tabAdded].map((col) => ({
 					header: col.sub ? `${col.label} (${col.sub})` : col.label,
 					width: col.width ?? 16,
 					value: (r: ScreenerRow) => exportValue(col, r),
